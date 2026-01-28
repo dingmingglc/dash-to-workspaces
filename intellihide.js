@@ -275,7 +275,6 @@ export const Intellihide = class {
 
   _setTrackPanel(enable) {
     let actorData = Utils.getTrackedActorData(this._panelBox)
-
     actorData.affectsStruts = !enable
     actorData.trackFullscreen = !enable
 

@@ -95,9 +95,8 @@ export const PanelManager = class {
       )
     }
 
-    let keepTopPanel = USE_SAFE_DEFAULTS_CONFLICTING
-      ? true
-      : SETTINGS.get_boolean('stockgs-keep-top-panel')
+    let keepTopPanel =
+      USE_SAFE_DEFAULTS_CONFLICTING || SETTINGS.get_boolean('stockgs-keep-top-panel')
 
     if (this.dtpPrimaryMonitor) {
       this.primaryPanel = this._createPanel(
@@ -134,17 +133,9 @@ export const PanelManager = class {
     this._desktopIconsUsableArea =
       new DesktopIconsIntegration.DesktopIconsUsableAreaClass()
 
-    this._oldUpdatePanelBarrier = Main.layoutManager._updatePanelBarrier
-    let panelManagerRef = this
-    Main.layoutManager._updatePanelBarrier = (panel) => {
-      panelManagerRef._oldUpdatePanelBarrier(panel)
-      let panelUpdates = panel ? [panel] : panelManagerRef.allPanels
-      panelUpdates.forEach((p) => {
-        if (panelManagerRef.allPanels.indexOf(p) >= 0)
-          newUpdatePanelBarrier.call(Main.layoutManager, p)
-      })
-    }
-    Main.layoutManager._updatePanelBarrier()
+    // NOTE: 不再覆盖 Main.layoutManager._updatePanelBarrier。
+    // 之前的覆盖在 GNOME Shell 49 上会触发 `_destroyPanelBarrier is not a function`，导致扩展进入 ERROR。
+    // 原生 LayoutManager 的 panel barrier 更新足够满足 DtW；DtW 自己的面板 barrier 如有需要可单独处理。
 
     let dtpActive =
       USE_SAFE_DEFAULTS_CONFLICTING ||
@@ -249,6 +240,20 @@ export const PanelManager = class {
 
     this._signalsHandler = new Utils.GlobalSignalsHandler()
 
+    // 原生 GNOME 顶栏（Main.layoutManager.panelBox）避让：
+    // - GNOME Shell 原生 _updateBoxes() 会把 panelBox 设成整屏宽（monitor.width）
+    // - 这里在“仍使用原生顶栏”的情况下，把 panelBox 的 x/width 改为 work area 的 x/width
+    //   这样当右侧 DtW 产生 RIGHT strut 后，顶栏会缩短避免覆盖右侧面板。
+    this._oldLayoutUpdateBoxes = Main.layoutManager._updateBoxes
+    this._topPanelBoxUpdateQueued = false
+    Main.layoutManager._updateBoxes = (...args) => {
+      // 先跑原逻辑（更新键盘盒等），再做 panelBox 的 workarea 修正
+      if (typeof this._oldLayoutUpdateBoxes === 'function')
+        this._oldLayoutUpdateBoxes.apply(Main.layoutManager, args)
+      // 这里直接同步修正，避免后续又被原生逻辑覆盖导致“看起来没生效”
+      this._updateTopPanelBoxFromWorkArea()
+    }
+
     //listen settings
     this._signalsHandler.add(
       [
@@ -307,6 +312,8 @@ export const PanelManager = class {
           }
         },
       ],
+      // 当 struts/workarea 变化时（例如 DtW 宽度/显示状态变化），让原生顶栏重新按 workarea 缩短
+      [global.display, 'workareas-changed', () => this._queueUpdateTopPanelBox()],
     )
 
     // 在 USE_SAFE_DEFAULTS_CONFLICTING 模式下，不监听 Main.panel 的信号
@@ -331,10 +338,12 @@ export const PanelManager = class {
 
     this._setKeyBindings(true)
 
+    // 启用后补一次（避免首次 enable 时 workarea 还没刷新）
+    this._queueUpdateTopPanelBox()
+
     // keep GS overview.js from blowing away custom panel styles
-    let keepTop = USE_SAFE_DEFAULTS_CONFLICTING
-      ? true
-      : SETTINGS.get_boolean('stockgs-keep-top-panel')
+    let keepTop =
+      USE_SAFE_DEFAULTS_CONFLICTING || SETTINGS.get_boolean('stockgs-keep-top-panel')
     if (!keepTop)
       Object.defineProperty(Main.panel, 'style', {
         configurable: true,
@@ -435,8 +444,13 @@ export const PanelManager = class {
       this._oldFindIndexForActor = undefined
     } else delete Main.layoutManager.findIndexForActor
 
-    Main.layoutManager._updatePanelBarrier = this._oldUpdatePanelBarrier
-    Main.layoutManager._updatePanelBarrier()
+    // 保持原生 LayoutManager._updatePanelBarrier，不做恢复/重写
+
+    // 恢复原生 LayoutManager 行为
+    if (this._oldLayoutUpdateBoxes) {
+      Main.layoutManager._updateBoxes = this._oldLayoutUpdateBoxes
+      this._oldLayoutUpdateBoxes = null
+    }
 
     LookingGlass.LookingGlass.prototype._resize =
       LookingGlass.LookingGlass.prototype._oldResize
@@ -458,6 +472,42 @@ export const PanelManager = class {
   }
 
   _emptyFunc() {}
+
+  _queueUpdateTopPanelBox() {
+    if (this._topPanelBoxUpdateQueued) return
+    this._topPanelBoxUpdateQueued = true
+    GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+      this._topPanelBoxUpdateQueued = false
+      this._updateTopPanelBoxFromWorkArea()
+      return GLib.SOURCE_REMOVE
+    })
+  }
+
+  _updateTopPanelBoxFromWorkArea() {
+    // 仅当 layoutManager.panelBox 仍在 layoutManager.uiGroup 下（原生顶栏容器）才处理：
+    // 如果 panelBox 被其它扩展 removeChrome()/reparent（例如 Dash to Panel 接管），不要动它。
+    try {
+      const parent = Main.layoutManager.panelBox.get_parent()
+      if (parent !== Main.layoutManager.uiGroup)
+        return
+    } catch (e) {
+      return
+    }
+    if (!Main.layoutManager.primaryMonitor) return
+
+    const primary = Main.layoutManager.primaryMonitor
+    let wa
+    try {
+      wa = Main.layoutManager.getWorkAreaForMonitor(Main.layoutManager.primaryIndex)
+    } catch (e) {
+      return
+    }
+    if (!wa) return
+
+    // y 仍使用 monitor.y（顶栏必须在屏幕顶部），x/width 使用 work area（避让侧边 strut）
+    Main.layoutManager.panelBox.set_position(wa.x, primary.y)
+    Main.layoutManager.panelBox.set_size(wa.width, -1)
+  }
 
   _setDesktopIconsMargins() {
     this._desktopIconsUsableArea?.resetMargins()
@@ -716,6 +766,9 @@ export const PanelManager = class {
       Main.layoutManager.removeChrome(panelBox)
     }
 
+    // clipContainer 只是裁剪/定位容器：
+    // - work area/struts 由 panelBox（trackChrome affectsStruts: true）提供
+    // - intellihide 显示/隐藏时会动态关闭/开启 struts（见 intellihide._setTrackPanel）
     Main.layoutManager.addChrome(clipContainer, { affectsInputRegion: false })
     clipContainer.add_child(panelBox)
 
@@ -740,6 +793,7 @@ export const PanelManager = class {
 
     Main.layoutManager.trackChrome(panelBox, {
       trackFullscreen: true,
+      // DtW 的面板需要提供 strut 才能正确缩小 work area（最大化窗口不覆盖面板）
       affectsStruts: true,
     })
 
@@ -1057,102 +1111,13 @@ function newUpdateHotCorners() {
   this.emit('hot-corners-changed')
 }
 
-function newUpdatePanelBarrier(panel) {
-  let barriers = {
-    _rightPanelBarrier: [panel.isStandalone ? panel : this],
-    _leftPanelBarrier: [panel],
-  }
-
-  Object.keys(barriers).forEach((k) => {
-    let obj = barriers[k][0]
-
-    if (obj[k]) {
-      obj[k].destroy()
-      obj[k] = null
-    }
-  })
-
-  if (!this.primaryMonitor || !panel.panelBox.height) {
-    return
-  }
-
-  let barrierSize = Math.min(10, panel.panelBox.height)
-  let fixed1 = panel.monitor.y
-  let fixed2 = panel.monitor.y + barrierSize
-
-  if (panel.geom.vertical) {
-    barriers._rightPanelBarrier.push(
-      panel.monitor.y + panel.monitor.height,
-      Meta.BarrierDirection.NEGATIVE_Y,
-    )
-    barriers._leftPanelBarrier.push(
-      panel.monitor.y,
-      Meta.BarrierDirection.POSITIVE_Y,
-    )
-  } else {
-    barriers._rightPanelBarrier.push(
-      panel.monitor.x + panel.monitor.width,
-      Meta.BarrierDirection.NEGATIVE_X,
-    )
-    barriers._leftPanelBarrier.push(
-      panel.monitor.x,
-      Meta.BarrierDirection.POSITIVE_X,
-    )
-  }
-
-  switch (panel.geom.position) {
-    //values are initialized as St.Side.TOP
-    case St.Side.BOTTOM:
-      fixed1 = panel.monitor.y + panel.monitor.height - barrierSize
-      fixed2 = panel.monitor.y + panel.monitor.height
-      break
-    case St.Side.LEFT:
-      fixed1 = panel.monitor.x + barrierSize
-      fixed2 = panel.monitor.x
-      break
-    case St.Side.RIGHT:
-      fixed1 = panel.monitor.x + panel.monitor.width - barrierSize
-      fixed2 = panel.monitor.x + panel.monitor.width
-      break
-  }
-
-  //remove left barrier if it overlaps one of the hotcorners
-  for (let k in this.hotCorners) {
-    let hc = this.hotCorners[k]
-
-    if (
-      hc &&
-      hc._monitor == panel.monitor &&
-      (fixed1 == hc._x || fixed2 == hc._x || fixed1 == hc._y || fixed2 == hc._y)
-    ) {
-      delete barriers._leftPanelBarrier
-      break
-    }
-  }
-
-  Object.keys(barriers).forEach((k) => {
-    let barrierOptions = {
-      backend: global.backend,
-      directions: barriers[k][2],
-    }
-
-    barrierOptions[panel.varCoord.c1] = barrierOptions[panel.varCoord.c2] =
-      barriers[k][1]
-    barrierOptions[panel.fixedCoord.c1] = fixed1
-    barrierOptions[panel.fixedCoord.c2] = fixed2
-
-    barriers[k][0][k] = new Meta.Barrier(barrierOptions)
-  })
-}
-
 function _newLookingGlassResize() {
   let primaryMonitorPanel = Utils.find(
     global.workspacesToDock.panels,
     (p) => p.monitor == Main.layoutManager.primaryMonitor,
   )
-  let keepTop = USE_SAFE_DEFAULTS_CONFLICTING
-    ? true
-    : SETTINGS.get_boolean('stockgs-keep-top-panel')
+  let keepTop =
+    USE_SAFE_DEFAULTS_CONFLICTING || SETTINGS.get_boolean('stockgs-keep-top-panel')
   let topOffset =
     primaryMonitorPanel.geom.position == St.Side.TOP
       ? primaryMonitorPanel.geom.outerSize +

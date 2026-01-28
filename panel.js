@@ -55,6 +55,7 @@ import * as Volume from 'resource:///org/gnome/shell/ui/status/volume.js'
 
 import * as Intellihide from './intellihide.js'
 import * as Transparency from './transparency.js'
+import * as WorkspacePreview from './workspacePreview.js'
 import {
   SETTINGS,
   DESKTOPSETTINGS,
@@ -125,6 +126,7 @@ export const Panel = GObject.registerClass(
       this._sessionStyle = null
       this._unmappedButtons = []
       this._elementGroups = []
+      this._dtwExternalZApplied = false
 
       let systemMenuInfo = Utils.getSystemMenuInfo()
 
@@ -220,11 +222,15 @@ export const Panel = GObject.registerClass(
 
       this.panel._delegate = this
 
+      // 非主面板，直接添加原有面板
+      // 主面板的容器将在 enable() 中创建，因为需要等待 taskbar 等组件初始化
       this.add_child(this.panel)
 
+      // 右键菜单：绑定到任务栏面板（Main.panel / SecondaryPanel）
+      let buttonPressTarget = this.panel
       if (Main.panel._onButtonPress || Main.panel._tryDragWindow) {
         this._signalsHandler.add([
-          this.panel,
+          buttonPressTarget,
           ['button-press-event', 'touch-event'],
           this._onButtonPress.bind(this),
         ])
@@ -315,6 +321,12 @@ export const Panel = GObject.registerClass(
         'dashtopanelMainPanel ' + this.getOrientation(),
       )
 
+      // 只在主面板上创建工作区预览视图
+      if (this.isPrimary) {
+        this.workspacePreview = new WorkspacePreview.WorkspacePreviewView(this)
+        this.add_child(this.workspacePreview)
+      }
+
       this.intellihide = new Intellihide.Intellihide(this)
 
       this._signalsHandler.add(
@@ -371,6 +383,16 @@ export const Panel = GObject.registerClass(
         ],
         [this.panel, 'scroll-event', this._onPanelMouseScroll.bind(this)],
         [Main.layoutManager, 'startup-complete', () => this._resetGeometry()],
+        // 监听几何变化，更新工作区预览视图布局
+        [
+          this,
+          'notify::allocation',
+          () => {
+            if (this.workspacePreview) {
+              this.workspacePreview._updateLayout()
+            }
+          },
+        ],
       )
 
       this._bindSettingsChanges()
@@ -431,6 +453,13 @@ export const Panel = GObject.registerClass(
       }
 
       this.dynamicTransparency.destroy()
+
+      // 销毁工作区预览视图
+      if (this.workspacePreview) {
+        this.remove_child(this.workspacePreview)
+        this.workspacePreview.destroy()
+        this.workspacePreview = null
+      }
 
       this.taskbar.destroy()
       this.showAppsIconWrapper.destroy()
@@ -644,6 +673,12 @@ export const Panel = GObject.registerClass(
             'changed::panel-top-bottom-padding',
             'changed::panel-sizes',
             'changed::group-apps',
+            // 预览区域会改变“总面板尺寸”，必须触发 _resetGeometry() 才能更新 struts/workarea
+            'changed::workspace-preview-width',
+            'changed::workspace-preview-display-mode',
+            'changed::workspace-preview-position-outside',
+            // 避免与 Dash to Panel（外部扩展）重叠：需要重算 y/struts
+            'changed::workspace-preview-avoid-dash-to-panel',
           ],
           (settings, settingChanged) => {
             PanelSettings.clearCache(settingChanged)
@@ -678,6 +713,36 @@ export const Panel = GObject.registerClass(
           },
         ],
       )
+
+      // Dash to Panel（外部扩展）显示/隐藏通常会引起 workarea/struts 变化；
+      // 开启“避让”时，监听 workareas-changed，动态重算面板几何，避免重叠或留下空白。
+      const queueDtpRecalc = () => {
+        if (!SETTINGS.get_boolean('workspace-preview-avoid-dash-to-panel')) return
+        // 不依赖 this.geom / getPosition 的即时值：直接以 workarea 顶部变化为准
+        const inset = this._getExternalTopInsetPx()
+
+        if (this._dtwLastExternalTopInset === inset) return
+        this._dtwLastExternalTopInset = inset
+
+        // 去抖：避免频繁触发造成抖动
+        this._timeoutsHandler.add(['dtw-dtp-workarea', 80, () => this._resetGeometry()])
+      }
+      this._signalsHandler.add(
+        [Main.layoutManager, 'workareas-changed', queueDtpRecalc],
+        // 有些环境里 workarea 变化从 display 发出更稳定
+        [global.display, 'workareas-changed', queueDtpRecalc],
+      )
+
+      // 网上常见的做法：监听 global.display 的 restacked（GNOME Shell 自己也用它处理层级变化）
+      // DTP hover reveal 往往会触发 restack，用它来重排层级比监听 DTP 的动画信号更“通用”。
+      this._signalsHandler.add([
+        global.display,
+        'restacked',
+        () => {
+          if (!SETTINGS.get_boolean('workspace-preview-avoid-dash-to-panel')) return
+          this._timeoutsHandler.add(['dtw-dtp-restack', 0, () => this._restackExternalDashToPanel()])
+        },
+      ])
 
       if (isVertical) {
         this._signalsHandler.add([
@@ -758,6 +823,93 @@ export const Panel = GObject.registerClass(
         )
         this._refreshVerticalAlloc()
       }
+
+      // DTP hover reveal 时，确保 DTP 在我们上层（类似更高 z-index）
+      this._restackExternalDashToPanel()
+    }
+
+    _getExternalTopInsetPx() {
+      // 以“workarea 顶部”作为权威来源（与全屏窗口调整一致），并在有占用时留 1px 缝隙
+      try {
+        const wa = Main.layoutManager.getWorkAreaForMonitor(this.monitor.index)
+        let inset = Math.max(0, (wa?.y ?? 0) - (this.monitor.y ?? 0))
+        if (inset > 0) inset += 1
+        return inset
+      } catch (e) {
+        return 0
+      }
+    }
+
+    _getExternalDashToPanelUiGroupActor() {
+      // 用于叠层的应是 uiGroup 的直接子 actor（很多扩展会把 panelBox 放在 clipContainer 里）
+      try {
+        const dtp = global.dashToPanel
+        if (!dtp?.panels?.length) return null
+
+        const uiGroup = Main.layoutManager.uiGroup ?? Main.uiGroup
+
+        for (let p of dtp.panels) {
+          if (!p) continue
+          if (p.monitor?.index !== this.monitor.index) continue
+          const pos = p.geom?.position ?? p.getPosition?.()
+          if (pos !== St.Side.TOP) continue
+
+          const dtpBox = p.panelBox
+          if (!dtpBox) continue
+
+          if (!uiGroup) return dtpBox
+
+          // 向上找，直到找到 uiGroup 的直接子 actor
+          let a = dtpBox
+          while (a && a.get_parent && a.get_parent() && a.get_parent() !== uiGroup) {
+            a = a.get_parent()
+          }
+          if (a && a.get_parent && a.get_parent() === uiGroup) return a
+
+          // fallback：至少返回 panelBox
+          return dtpBox
+        }
+      } catch (e) {
+        // ignore
+      }
+
+      return null
+    }
+
+    _restackExternalDashToPanel() {
+      // 目标：让外部 DTP 始终在我们上层（重叠时 DTP 覆盖我们）
+      if (!SETTINGS.get_boolean('workspace-preview-avoid-dash-to-panel')) return
+
+      const dtpUiActor = this._getExternalDashToPanelUiGroupActor()
+      if (!dtpUiActor || !this.clipContainer) return
+
+      try {
+        // 参照 GNOME Shell 的层级：Main.layoutManager.uiGroup 包含所有 chrome
+        // addChrome() 会把 actor 放在 top_window_group 下面；我们也要保持这个约束
+        const uiGroup = Main.layoutManager.uiGroup ?? Main.uiGroup
+        const topWinGroup = global.top_window_group
+
+        const my = this.clipContainer
+        const dtpParent = dtpUiActor.get_parent?.()
+        const myParent = my.get_parent?.()
+
+        if (uiGroup && dtpParent === uiGroup && myParent === uiGroup) {
+          // 确保 DTP 仍在 top_window_group 下方
+          if (topWinGroup && uiGroup.set_child_below_sibling) {
+            uiGroup.set_child_below_sibling(dtpUiActor, topWinGroup)
+          }
+          // 把 DTP 放到我们上面（更直接）
+          if (uiGroup.set_child_above_sibling) {
+            uiGroup.set_child_above_sibling(dtpUiActor, my)
+            return
+          }
+        }
+
+        // fallback：尽量抬高 DTP（不如 uiGroup 精确，但比无处理好）
+        dtpUiActor.raise_top?.()
+      } catch (e) {
+        // ignore
+      }
     }
 
     getGeometry() {
@@ -822,6 +974,16 @@ export const Panel = GObject.registerClass(
         this.varCoord = { c1: 'y1', c2: 'y2' }
 
         w = innerSize
+        // 左/右面板：分左右两列 → 总宽度 = 任务栏宽度 + 预览宽度
+        if (this.isPrimary && this.workspacePreview) {
+          let displayMode = SETTINGS.get_string('workspace-preview-display-mode')
+          if (displayMode == 'PREVIEW' || displayMode == 'BOTH') {
+            let previewThickness = SETTINGS.get_int('workspace-preview-width')
+            w += previewThickness
+            outerSize += previewThickness
+          }
+        }
+        
         h = this.monitor.height * length - topBottomMargins - gsTopPanelHeight
         dockMode = !!dynamic || topBottomMargins > 0 || h < this.monitor.height
         fixedPadding = sidePadding * scaleFactor
@@ -833,22 +995,45 @@ export const Panel = GObject.registerClass(
         this.varCoord = { c1: 'x1', c2: 'x2' }
 
         w = this.monitor.width * length - sideMargins
+
         h = innerSize
+        // 上/下面板：分上下两行 → 总高度 = 任务栏高度 + 预览高度
+        if (this.isPrimary && this.workspacePreview) {
+          let displayMode = SETTINGS.get_string('workspace-preview-display-mode')
+          if (displayMode == 'PREVIEW' || displayMode == 'BOTH') {
+            let previewThickness = SETTINGS.get_int('workspace-preview-width')
+            h += previewThickness
+            outerSize += previewThickness
+          }
+        }
+
         dockMode = !!dynamic || sideMargins > 0 || w < this.monitor.width
         fixedPadding = topBottomPadding * scaleFactor
         varPadding = sidePadding * scaleFactor
         outerSize += topBottomMargins - topOffset
       }
 
+      // 顶部避让：以“workarea 顶部”作为权威来源（与全屏窗口调整一致）
+      // - Dash to Panel 显示/隐藏时，会改变 workarea（struts），全屏窗口据此自动调整
+      // - 我们也用同一个 workarea 来定位，保证始终一致
+      // - 仅当用户开启该开关且检测到 DTP 存在时启用（避免影响无 DTP 的场景）
+      let topInset = gsTopPanelHeight
+      if (
+        SETTINGS.get_boolean('workspace-preview-avoid-dash-to-panel') &&
+        global.dashToPanel?.panels?.length
+      ) {
+        topInset = Math.max(topInset, this._getExternalTopInsetPx())
+      }
+
       if (position == St.Side.TOP) {
         x = this.monitor.x
-        y = this.monitor.y
+        y = this.monitor.y + topInset
       } else if (position == St.Side.LEFT) {
         x = this.monitor.x
-        y = this.monitor.y + gsTopPanelHeight
+        y = this.monitor.y + topInset
       } else if (position == St.Side.RIGHT) {
         x = this.monitor.x + this.monitor.width - w - sideMargins
-        y = this.monitor.y + gsTopPanelHeight
+        y = this.monitor.y + topInset
       } else {
         //BOTTOM
         x = this.monitor.x
@@ -915,14 +1100,105 @@ export const Panel = GObject.registerClass(
     }
 
     _mainPanelAllocate(box) {
+      // 在使用系统主面板（Main.panel）时，我们只需要设置其 allocation
+      // 具体元素的布局由本类的 vfunc_allocate 负责
       this.panel.set_allocation(box)
     }
 
     vfunc_allocate(box) {
+      // 主面板本体 allocation
+      this.set_allocation(box)
+
+      // 显示模式与分区计算
+      const displayMode = SETTINGS.get_string('workspace-preview-display-mode')
+      const showPanel = displayMode == 'PANEL' || displayMode == 'BOTH'
+      const showPreview = displayMode == 'PREVIEW' || displayMode == 'BOTH'
+
+      if (this.panel) this.panel.visible = showPanel
+      if (this.workspacePreview) this.workspacePreview.visible = showPreview
+
+      // 只有预览：预览占满整个主面板
+      if (showPreview && !showPanel && this.workspacePreview) {
+        this.workspacePreview.allocate(box)
+        return
+      }
+
+      // 只有任务栏：任务栏占满整个主面板（走原始分配逻辑）
+      // 两者都显示：按位置分区，任务栏区域继续走原始分配逻辑
+      let taskBox = new Clutter.ActorBox()
+      taskBox.x1 = box.x1
+      taskBox.x2 = box.x2
+      taskBox.y1 = box.y1
+      taskBox.y2 = box.y2
+
+      if (showPreview && showPanel && this.workspacePreview) {
+        const thickness = SETTINGS.get_int('workspace-preview-width')
+        // 两个区域之间不留缝隙，避免进一步压缩任务栏宽度
+        const gap = 0
+        const isSidePanel = this.geom.position == St.Side.LEFT || this.geom.position == St.Side.RIGHT
+        const isOutside = SETTINGS.get_boolean('workspace-preview-position-outside')
+
+        const previewBox = new Clutter.ActorBox()
+        taskBox = new Clutter.ActorBox()
+
+        if (isSidePanel) {
+          // 左/右：左右两列（从上到下）
+          // “内侧”=靠屏幕边缘，“外侧”=靠屏幕中心
+          // 直接按规则算：RIGHT: 内侧→右；外侧→左。LEFT: 内侧→左；外侧→右。
+          let previewFirst
+          if (this.geom.position == St.Side.RIGHT) previewFirst = isOutside // 外侧在左 → 预览先
+          else previewFirst = !isOutside // LEFT: 内侧在左 → 预览先
+
+          if (previewFirst) {
+            previewBox.x1 = box.x1
+            previewBox.x2 = box.x1 + thickness
+            taskBox.x1 = previewBox.x2 + gap
+            taskBox.x2 = box.x2
+          } else {
+            previewBox.x2 = box.x2
+            previewBox.x1 = box.x2 - thickness
+            taskBox.x1 = box.x1
+            taskBox.x2 = previewBox.x1 - gap
+          }
+          previewBox.y1 = box.y1
+          previewBox.y2 = box.y2
+          taskBox.y1 = box.y1
+          taskBox.y2 = box.y2
+        } else {
+          // 上/下：上下两行（从左到右）
+          // TOP: 内侧→上；外侧→下。BOTTOM: 内侧→下；外侧→上。
+          let previewFirst
+          if (this.geom.position == St.Side.TOP) previewFirst = !isOutside
+          else previewFirst = isOutside
+
+          if (previewFirst) {
+            previewBox.y1 = box.y1
+            previewBox.y2 = box.y1 + thickness
+            taskBox.y1 = previewBox.y2 + gap
+            taskBox.y2 = box.y2
+          } else {
+            previewBox.y2 = box.y2
+            previewBox.y1 = box.y2 - thickness
+            taskBox.y1 = box.y1
+            taskBox.y2 = previewBox.y1 - gap
+          }
+          previewBox.x1 = box.x1
+          previewBox.x2 = box.x2
+          taskBox.x1 = box.x1
+          taskBox.x2 = box.x2
+        }
+
+        // 分配预览区域
+        this.workspacePreview.allocate(previewBox)
+      }
+
+      // === 下面开始：把“原来的任务栏分配算法”应用到 taskBox 上 ===
       let fixed = 0
       let centeredMonitorGroup
-      let varSize = box[this.varCoord.c2] - box[this.varCoord.c1]
-      let fixedSize = box[this.fixedCoord.c2] - box[this.fixedCoord.c1]
+      let varSize = taskBox[this.varCoord.c2] - taskBox[this.varCoord.c1]
+      let fixedSize = taskBox[this.fixedCoord.c2] - taskBox[this.fixedCoord.c1]
+
+      // panelAllocLocal：用于子元素（相对 Main.panel 的 0,0）
       let panelAlloc = new Clutter.ActorBox()
       let assignGroupSize = (group, update) => {
         group.size = 0
@@ -1051,8 +1327,8 @@ export const Panel = GObject.registerClass(
 
       if (this.geom.dynamic && this._elementGroups.length == 1) {
         let dynamicGroup = this._elementGroups[0] // only one group if dynamic
-        let tl = box[this.varCoord.c1]
-        let br = box[this.varCoord.c2]
+        let tl = taskBox[this.varCoord.c1]
+        let br = taskBox[this.varCoord.c2]
         let groupSize = dynamicGroup.size + this.geom.varPadding * 2
 
         if (this.geom.dynamic == Pos.STACKED_TL) {
@@ -1067,14 +1343,29 @@ export const Panel = GObject.registerClass(
           br -= half
         }
 
-        box[this.varCoord.c1] = tl
-        box[this.varCoord.c2] = br
+        // 不要修改父级传入的 allocation（box），仅在任务栏区域 taskBox 内做动态长度调整
+        const taskBoxAdjusted = new Clutter.ActorBox()
+        taskBoxAdjusted.x1 = taskBox.x1
+        taskBoxAdjusted.x2 = taskBox.x2
+        taskBoxAdjusted.y1 = taskBox.y1
+        taskBoxAdjusted.y2 = taskBox.y2
+        taskBoxAdjusted[this.varCoord.c1] = tl
+        taskBoxAdjusted[this.varCoord.c2] = br
+        taskBox = taskBoxAdjusted
 
         panelAlloc[this.varCoord.c2] = Math.min(groupSize, br - tl)
       }
 
-      this.set_allocation(box)
-      this.panel.allocate(panelAlloc)
+      // Main.panel 在父级坐标系中的 allocation：放到 taskBox 上
+      // 注意：子元素 box 仍使用 panelAlloc（从 0 开始），因为它们是 Main.panel 的子元素
+      if (this.panel) {
+        const panelBox = new Clutter.ActorBox()
+        panelBox.x1 = taskBox.x1
+        panelBox.x2 = taskBox.x2
+        panelBox.y1 = taskBox.y1
+        panelBox.y2 = taskBox.y2
+        this.panel.allocate(panelBox)
+      }
 
       // apply padding to panel's children, after panel allocation
       panelAlloc[this.varCoord.c1] += this.geom.varPadding
@@ -1134,7 +1425,9 @@ export const Panel = GObject.registerClass(
         let topBottomMargins = SETTINGS.get_int('panel-top-bottom-margins')
         let sideMargins = SETTINGS.get_int('panel-side-margins')
 
-        style = `padding: ${this.geom.topOffset + topBottomMargins}px ${sideMargins}px ${topBottomMargins}px;`
+        // 顶部 padding 尽量收敛，避免和外部顶栏/面板避让叠加导致“空一截”
+        const topPad = Math.min(1, this.geom.topOffset + topBottomMargins)
+        style = `padding: ${topPad}px ${sideMargins}px ${topBottomMargins}px;`
       }
 
       this.panelBox.set_style(style)
@@ -1197,14 +1490,25 @@ export const Panel = GObject.registerClass(
       let button = isPress ? event.get_button() : -1
       let [stageX, stageY] = event.get_coords()
 
-      if (
-        button == 3 &&
-        global.stage.get_actor_at_pos(
-          Clutter.PickMode.REACTIVE,
-          stageX,
-          stageY,
-        ) == this.panel
-      ) {
+      // 右键点击在任务栏面板空白处：显示 show-apps 的 context menu
+      const pickActor = global.stage.get_actor_at_pos(
+        Clutter.PickMode.REACTIVE,
+        stageX,
+        stageY,
+      )
+      const isOnPanel =
+        pickActor && (pickActor == this.panel || this.panel.contains(pickActor))
+
+      if (button == 3 && isOnPanel) {
+        // 如果点击在预览区域，不显示菜单
+        if (
+          this.workspacePreview &&
+          pickActor &&
+          this.workspacePreview.contains(pickActor)
+        ) {
+          return Clutter.EVENT_PROPAGATE
+        }
+
         //right click on an empty part of the panel, temporarily borrow and display the showapps context menu
         Main.layoutManager.setDummyCursorGeometry(stageX, stageY, 0, 0)
 

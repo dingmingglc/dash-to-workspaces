@@ -3902,6 +3902,73 @@ const Preferences = class {
       Gio.SettingsBindFlags.DEFAULT,
     )
 
+    // Workspace Preview Settings
+    this._builder
+      .get_object('workspace_preview_position_combo')
+      .set_active_id(
+        this._settings.get_boolean('workspace-preview-position-outside')
+          ? 'outside'
+          : 'inside',
+      )
+    this._builder
+      .get_object('workspace_preview_position_combo')
+      .connect('changed', (widget) => {
+        this._settings.set_boolean(
+          'workspace-preview-position-outside',
+          widget.get_active_id() == 'outside',
+        )
+      })
+
+    this._builder
+      .get_object('workspace_preview_display_mode_combo')
+      .set_active_id(
+        this._settings.get_string('workspace-preview-display-mode'),
+      )
+    this._settings.bind(
+      'workspace-preview-display-mode',
+      this._builder.get_object('workspace_preview_display_mode_combo'),
+      'active-id',
+      Gio.SettingsBindFlags.DEFAULT,
+    )
+
+    this._builder
+      .get_object('workspace_preview_width_scale')
+      .set_value(this._settings.get_int('workspace-preview-width'))
+    this._builder
+      .get_object('workspace_preview_width_scale')
+      .connect('value-changed', (widget) => {
+        this._settings.set_int('workspace-preview-width', widget.get_value())
+      })
+
+    this._builder
+      .get_object('workspace_preview_spacing_scale')
+      .set_value(this._settings.get_int('workspace-preview-spacing'))
+    this._builder
+      .get_object('workspace_preview_spacing_scale')
+      .connect('value-changed', (widget) => {
+        this._settings.set_int('workspace-preview-spacing', widget.get_value())
+      })
+
+    this._builder
+      .get_object('workspace_preview_name_position_combo')
+      .set_active_id(
+        this._settings.get_string('workspace-preview-name-position'),
+      )
+      this._settings.bind(
+        'workspace-preview-name-position',
+        this._builder.get_object('workspace_preview_name_position_combo'),
+        'active-id',
+        Gio.SettingsBindFlags.DEFAULT,
+      )
+
+      // Avoid Dash to Panel overlap
+      this._settings.bind(
+        'workspace-preview-avoid-dash-to-panel',
+        this._builder.get_object('workspace_preview_avoid_dash_to_panel_switch'),
+        'active',
+        Gio.SettingsBindFlags.DEFAULT,
+      )
+
     // About Panel
 
     let versionLinkButton = this._builder.get_object('extension_version')

@@ -150,6 +150,121 @@
 	margin: 0 0 0 2px;
 }
 
+/* Workspace Preview View Styles */
+.workspace-preview-view {
+  /* 不额外加“黑幕”，让预览区空白背景与任务栏背景一致。
+     背景透明度/颜色统一由现有的 Panel 相关设置控制。 */
+  background-color: rgba(0, 0, 0, 0);
+  border-radius: 0px;
+  /* 取消左右 padding（需要更贴边） */
+  padding-left: 0px;
+  padding-right: 0px;
+  /* 上下可保留少量留白，避免贴边过紧 */
+  padding-top: 0px;
+  padding-bottom: 6px;
+  min-width: 220px;
+}
+
+.workspace-preview-item {
+  background-color: rgba(255, 255, 255, 0.1);
+  /* 预留边框宽度，避免激活态出现“抖动”（尺寸变化导致重排） */
+  border: 2px solid rgba(0, 0, 0, 0);
+  /* ST 里背景默认会画到 border 区域，导致看起来“全部充满”；
+     用 padding-box 让边框区域保持透明留白 */
+  background-clip: padding-box;
+  border-radius: 0px;
+  /* 取消 workspace 内部 padding/外边距，交给 spacing 控制 */
+  padding: 0px;
+  margin: 0px;
+  transition-duration: 200ms;
+}
+
+.workspace-preview-item:hover {
+  background-color: rgba(255, 255, 255, 0.15);
+}
+
+.workspace-preview-item-active {
+  background-color: rgba(78, 154, 6, 0.3);
+  /* 与非激活态保持相同边框宽度，只改变颜色，避免切换时尺寸变化 */
+  border: 2px solid rgba(0, 0, 0, 0);
+  border-color: rgba(78, 154, 6, 0.6);
+  background-clip: padding-box;
+  border-radius: 0px;
+  padding: 0px;
+  margin: 0px;
+}
+
+.workspace-preview-area {
+  /* 让壁纸背景可见 */
+  background-color: rgba(0, 0, 0, 0.0);
+  border-radius: 0px;
+  overflow: hidden;
+  padding: 0px;
+}
+
+.workspace-window-thumbnail {
+  border-radius: 0px;
+  overflow: hidden;
+}
+
+.workspace-preview-name {
+  text-align: center;
+  font-weight: bold;
+}
+
+.workspace-preview-badge {
+  spacing: 6px;
+}
+
+.workspace-preview-app-icons {
+  spacing: 4px;
+}
+
+.workspace-preview-app-icon {
+  padding: 0px;
+  margin: 0px;
+  background-color: transparent;
+}
+
+.workspace-preview-app-icon-clickable {
+  padding: 2px;
+  margin: 0px;
+  border-radius: 4px;
+  transition-duration: 150ms;
+  background-color: transparent;
+}
+
+.workspace-preview-app-icon-clickable:hover {
+  background-color: rgba(255, 255, 255, 0.2);
+  cursor: pointer;
+}
+
+.workspace-preview-app-icon-focused {
+  background-color: rgba(255, 255, 255, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.35);
+}
+
+.workspace-preview-drop-target {
+  border-color: rgba(114, 159, 207, 0.85) !important;
+  background-color: rgba(114, 159, 207, 0.12);
+}
+
+.workspace-preview-app-more-button {
+  padding: 2px;
+  margin: 0px;
+  border-radius: 4px;
+  background-color: transparent;
+}
+
+.workspace-preview-app-more-button:hover {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+.workspace-preview-app-more {
+  font-size: 11px;
+  color: rgba(255,255,255,0.8);
+}
+
 #dashtopanelScrollview .number-overlay {
 	background-color: rgba(0,0,0,0.8);
 }

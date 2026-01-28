@@ -69,6 +69,16 @@
     <value value='1' nick='RIPPLE'/>
     <value value='2' nick='PLANK'/>
   </enum>
+  <enum id='org.gnome.shell.extensions.dash-to-workspaces.workspacePreviewDisplayMode'>
+    <value value='0' nick='PANEL'/>
+    <value value='1' nick='PREVIEW'/>
+    <value value='2' nick='BOTH'/>
+  </enum>
+  <enum id='org.gnome.shell.extensions.dash-to-workspaces.workspacePreviewNamePosition'>
+    <value value='0' nick='BOTTOM_RIGHT'/>
+    <value value='1' nick='BOTTOM_LEFT'/>
+    <value value='2' nick='BELOW'/>
+  </enum>
   <schema path="/org/gnome/shell/extensions/workspaces-to-dock/" id="org.gnome.shell.extensions.dash-to-workspaces">
     <key name="panel-position" enum="org.gnome.shell.extensions.dash-to-workspaces.position">
       <default>'BOTTOM'</default>
@@ -456,7 +466,7 @@
       <description>Customize the Show Applications icon</description>
     </key>
     <key type="i" name="show-apps-icon-side-padding">
-      <default>8</default>
+      <default>2</default>
       <summary>Show Applications icon side padding</summary>
       <description>Customize the Show Applications icon side padding</description>
     </key>
@@ -1406,6 +1416,36 @@
     <key type="i" name="extension-version">
       <default>65</default>
       <summary>Installed extension version</summary>
+    </key>
+    <key type="b" name="workspace-preview-position-outside">
+      <default>true</default>
+      <summary>Workspace preview position</summary>
+      <description>If true, preview is shown outside the panel. If false, inside the panel.</description>
+    </key>
+    <key name="workspace-preview-display-mode" enum="org.gnome.shell.extensions.dash-to-workspaces.workspacePreviewDisplayMode">
+      <default>'BOTH'</default>
+      <summary>Workspace preview display mode</summary>
+      <description>Display mode: PANEL (current panel only), PREVIEW (preview only), or BOTH (both)</description>
+    </key>
+    <key type="i" name="workspace-preview-width">
+      <default>200</default>
+      <summary>Workspace preview width</summary>
+      <description>Width of the workspace preview panel in pixels</description>
+    </key>
+    <key type="i" name="workspace-preview-spacing">
+      <default>2</default>
+      <summary>Workspace preview spacing</summary>
+      <description>Spacing between workspace items in pixels</description>
+    </key>
+    <key name="workspace-preview-name-position" enum="org.gnome.shell.extensions.dash-to-workspaces.workspacePreviewNamePosition">
+      <default>'BOTTOM_RIGHT'</default>
+      <summary>Workspace preview name position</summary>
+      <description>Position of workspace name: BOTTOM_RIGHT (inside bottom-right), BOTTOM_LEFT (inside bottom-left), or BELOW (below preview)</description>
+    </key>
+    <key type="b" name="workspace-preview-avoid-dash-to-panel">
+      <default>true</default>
+      <summary>Avoid Dash to Panel overlap</summary>
+      <description>If enabled and Dash to Panel extension is active, adjust preview position to avoid overlapping with Dash to Panel panel</description>
     </key>
   </schema>
 </schemalist>
