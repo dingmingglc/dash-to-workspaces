@@ -5,7 +5,6 @@
   "settings-schema": "org.gnome.shell.extensions.dash-to-workspaces",
   "gettext-domain": "dash-to-workspaces",
   "shell-version": [
-    "48",
     "49"
   ],
   "version": 1,
