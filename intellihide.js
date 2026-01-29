@@ -492,7 +492,8 @@ export const Intellihide = class {
       this._dtpPanel.taskbar._dragMonitor ||
       this._hover ||
       (this._dtpPanel.geom.position == St.Side.TOP &&
-        Main.layoutManager.panelBox.get_hover()) ||
+        Main.layoutManager.panelBox.get_hover() &&
+        this._pointerAtEdge()) ||
       this._checkIfGrab()
     ) {
       return true
@@ -514,7 +515,15 @@ export const Intellihide = class {
       return this._hover
     }
 
+    // 开启“用指针显示”时：仅当鼠标在边缘才因“无窗口遮挡”而显示，避免未碰边就自动弹出
+    if (SETTINGS.get_boolean('intellihide-use-pointer'))
+      return !this._windowOverlap && this._hover
     return !this._windowOverlap
+  }
+
+  _pointerAtEdge() {
+    let [x, y] = global.get_pointer()
+    return this._pointerIn(x, y, 1, 'intellihide-use-pointer-limit-size')
   }
 
   _checkIfGrab() {

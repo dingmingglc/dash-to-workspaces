@@ -1,0 +1,27 @@
+---
+description: 项目与 GitHub 设置，便于直接帮用户处理推送、发布等
+alwaysApply: true
+---
+
+# Dash to Workspaces 项目与 GitHub 设置
+
+## 项目信息
+
+- **项目**：GNOME Shell 扩展 Dash to Workspaces（dash-to-workspaces@dingmingglc）
+- **扩展路径**：`~/.local/share/gnome-shell/extensions/dash-to-workspaces@dingmingglc`（或工作区根目录即该扩展目录）
+- **UUID**：`dash-to-workspaces@dingmingglc`
+- **版本**：`metadata.json` 中 `version` 为整数；发布标签用 [VERSION](VERSION) 文件（如 1.0.0 → tag v1.0.0）
+
+## GitHub
+
+- **仓库**：https://github.com/dingmingglc/dash-to-workspaces
+- **远程 URL**：`https://github.com/dingmingglc/dash-to-workspaces.git`
+- **默认分支**：`master`
+- **推送**：用户说「帮我 push」「推一下」「同步到 GitHub」等时，在该扩展目录执行 `git add`、`git commit`（按需）、`git push`。若需鉴权，由用户提供 token 或在本机执行 push；**不要**让用户把 token 贴到聊天里，提醒安全。
+- **发布**：发版时更新 [VERSION](VERSION) 和 `metadata.json` 的 `version`，提交后可在 GitHub 创建 Release，tag 如 `v1.0.0`。
+
+## 常用操作
+
+- **提交并推送**：`git add -A && git commit -m "..." && git push`（在扩展目录执行）
+- **仅推送**：`git push` 或 `git push -u origin master`
+- **远程**：保持 `origin` 为 `https://github.com/dingmingglc/dash-to-workspaces.git`；使用 token 推送后立即 `git remote set-url origin https://github.com/dingmingglc/dash-to-workspaces.git` 移除 URL 中的 token。

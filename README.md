@@ -19,6 +19,14 @@ Based on [Dash to Panel](https://github.com/home-sweet-gnome/dash-to-panel); ext
 
 ---
 
+## Languages
+
+- **English** — Default (source strings in code).
+- **中文（简体）** — `locale/zh_CN/LC_MESSAGES/dash-to-workspaces.mo`。
+- **gettext 域名**：`dash-to-workspaces`（`metadata.json` 中 `gettext-domain`）。更新翻译：编辑 `locale/zh_CN/LC_MESSAGES/dash-to-workspaces.po` 后运行 `msgfmt -o locale/zh_CN/LC_MESSAGES/dash-to-workspaces.mo locale/zh_CN/LC_MESSAGES/dash-to-workspaces.po`。
+
+---
+
 ## Version
 
 - **Release version:** see [VERSION](VERSION) (e.g. `1.0.0` for tagging releases).

@@ -1,0 +1,353 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) YEAR THE PACKAGE'S COPYRIGHT HOLDER
+# This file is distributed under the same license as the PACKAGE package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, YEAR.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: PACKAGE VERSION\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-01-29 11:34-0600\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=INTEGER; plural=EXPRESSION;\n"
+
+#: extension.js:94
+msgid "Dash to Workspaces has been updated!"
+msgstr ""
+
+#: extension.js:95
+msgid "You are now running version"
+msgstr ""
+
+#: extension.js:101
+msgid "See what's new"
+msgstr ""
+
+#: panel.js:248
+msgid "Top Bar"
+msgstr ""
+
+#: prefs.js:269
+msgid "Show Desktop button height (px)"
+msgstr ""
+
+#: prefs.js:270
+msgid "Show Desktop button width (px)"
+msgstr ""
+
+#: prefs.js:342
+msgid "Left"
+msgstr ""
+
+#: prefs.js:343
+msgid "Center"
+msgstr ""
+
+#: prefs.js:344
+msgid "Right"
+msgstr ""
+
+#: prefs.js:346
+msgid "Top"
+msgstr ""
+
+#: prefs.js:347 prefs.js:352
+msgid "Middle"
+msgstr ""
+
+#: prefs.js:348
+msgid "Bottom"
+msgstr ""
+
+#: prefs.js:351
+msgid "Start"
+msgstr ""
+
+#: prefs.js:353
+msgid "End"
+msgstr ""
+
+#: prefs.js:495
+msgid "Show Applications button"
+msgstr ""
+
+#: prefs.js:496
+msgid "Activities button"
+msgstr ""
+
+#: prefs.js:497
+msgid "Taskbar"
+msgstr ""
+
+#: prefs.js:498
+msgid "Date menu"
+msgstr ""
+
+#: prefs.js:499
+msgid "System menu"
+msgstr ""
+
+#: prefs.js:500
+msgid "Left box"
+msgstr ""
+
+#: prefs.js:501
+msgid "Center box"
+msgstr ""
+
+#: prefs.js:502
+msgid "Right box"
+msgstr ""
+
+#: prefs.js:503
+msgid "Desktop button"
+msgstr ""
+
+#: prefs.js:524 prefs.js:3110
+msgid "Move up"
+msgstr ""
+
+#: prefs.js:526 prefs.js:3118
+msgid "Move down"
+msgstr ""
+
+#: prefs.js:532
+msgid "Visible"
+msgstr ""
+
+#: prefs.js:536
+msgid "Select element position"
+msgstr ""
+
+#: prefs.js:550
+msgid "Stacked to top"
+msgstr ""
+
+#: prefs.js:550
+msgid "Stacked to left"
+msgstr ""
+
+#: prefs.js:554
+msgid "Stacked to bottom"
+msgstr ""
+
+#: prefs.js:554
+msgid "Stacked to right"
+msgstr ""
+
+#: prefs.js:556
+msgid "Centered"
+msgstr ""
+
+#: prefs.js:557
+msgid "Monitor Center"
+msgstr ""
+
+#: prefs.js:584
+msgid "More options"
+msgstr ""
+
+#: prefs.js:619
+msgid "Reset to defaults"
+msgstr ""
+
+#: prefs.js:642
+msgid "Show Applications options"
+msgstr ""
+
+#: prefs.js:703
+msgid "Open icon"
+msgstr ""
+
+#: prefs.js:721
+msgid "Show Desktop options"
+msgstr ""
+
+#: prefs.js:844
+msgid "Primary monitor"
+msgstr ""
+
+#: prefs.js:845
+msgid "Monitor "
+msgstr ""
+
+#: prefs.js:974
+msgid "Running Indicator Options"
+msgstr ""
+
+#: prefs.js:1510
+msgid "Dynamic opacity options"
+msgstr ""
+
+#: prefs.js:1934
+msgid "Intellihide options"
+msgstr ""
+
+#: prefs.js:2174
+msgid "Window preview options"
+msgstr ""
+
+#: prefs.js:2654
+msgid "Isolate Workspaces options"
+msgstr ""
+
+#: prefs.js:2690
+msgid "Isolate monitors options"
+msgstr ""
+
+#: prefs.js:2789
+msgid "Ungrouped application options"
+msgstr ""
+
+#: prefs.js:2956
+msgid "Customize middle-click behavior"
+msgstr ""
+
+#: prefs.js:3085
+msgid "Text"
+msgstr ""
+
+#: prefs.js:3094
+msgid "Command"
+msgstr ""
+
+#: prefs.js:3126 workspacePreview.js:506
+msgid "Remove"
+msgstr ""
+
+#: prefs.js:3154
+msgid "Customize panel scroll behavior"
+msgstr ""
+
+#: prefs.js:3200
+msgid "Customize icon scroll behavior"
+msgstr ""
+
+#: prefs.js:3324
+msgid "Advanced hotkeys options"
+msgstr ""
+
+#: prefs.js:3352
+msgid "Secondary Menu Options"
+msgstr ""
+
+#: prefs.js:3552
+#, javascript-format
+msgid "%d ms"
+msgstr ""
+
+#: prefs.js:3558
+#, javascript-format
+msgid "%d °"
+msgstr ""
+
+#: prefs.js:3564 prefs.js:3570
+#, javascript-format
+msgid "%d %%"
+msgstr ""
+
+#: prefs.js:3576
+#, javascript-format
+msgid "%.1f"
+msgstr ""
+
+#: prefs.js:3582
+#, javascript-format
+msgid "%d icon"
+msgid_plural "%d icons"
+msgstr[0] ""
+msgstr[1] ""
+
+#: prefs.js:3709
+msgid "App icon animation options"
+msgstr ""
+
+#: prefs.js:3832
+msgid "App icon highlight options"
+msgstr ""
+
+#: prefs.js:4010
+msgid "Export settings"
+msgstr ""
+
+#: prefs.js:4032
+msgid "Import settings"
+msgstr ""
+
+#: appIcons.js:1950 appIcons.js:1961 workspacePreview.js:1347
+msgid "Quit"
+msgstr ""
+
+#: appIcons.js:1967
+#, javascript-format
+msgid "Quit %d Window"
+msgid_plural "Quit %d Windows"
+msgstr[0] ""
+msgstr[1] ""
+
+#: appIcons.js:2300
+msgid "Power options"
+msgstr ""
+
+#: appIcons.js:2305
+msgid "Event logs"
+msgstr ""
+
+#: appIcons.js:2310
+msgid "System"
+msgstr ""
+
+#: appIcons.js:2315
+msgid "Device Management"
+msgstr ""
+
+#: appIcons.js:2320
+msgid "Disk Management"
+msgstr ""
+
+#: appIcons.js:2351
+msgid "Unlock taskbar"
+msgstr ""
+
+#: appIcons.js:2352
+msgid "Lock taskbar"
+msgstr ""
+
+#: appIcons.js:2362
+msgid "Gnome Settings"
+msgstr ""
+
+#: appIcons.js:2366
+msgid "Dash to Workspaces Settings"
+msgstr ""
+
+#: appIcons.js:2373
+msgid "Restore Windows"
+msgstr ""
+
+#: appIcons.js:2374
+msgid "Show Desktop"
+msgstr ""
+
+#: workspacePreview.js:519
+msgid "No favorites"
+msgstr ""
+
+#: workspacePreview.js:1331
+msgid "New Window"
+msgstr ""
+
+#: workspacePreview.js:1940
+msgid "Empty"
+msgstr ""
+
+#: windowPreview.js:1155
+msgid "Move to current Workspace"
+msgstr ""

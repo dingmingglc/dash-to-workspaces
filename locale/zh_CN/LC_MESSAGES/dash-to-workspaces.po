@@ -1,0 +1,348 @@
+# Dash to Workspaces - Simplified Chinese
+# Copyright (C) 2026
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: PACKAGE VERSION\n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-01-29 11:34-0600\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: zh_CN\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+
+#: extension.js:94
+msgid "Dash to Workspaces has been updated!"
+msgstr "Dash to Workspaces 已更新！"
+
+#: extension.js:95
+msgid "You are now running version"
+msgstr "您当前运行的版本为"
+
+#: extension.js:101
+msgid "See what's new"
+msgstr "查看更新内容"
+
+#: panel.js:248
+msgid "Top Bar"
+msgstr "顶栏"
+
+#: prefs.js:269
+msgid "Show Desktop button height (px)"
+msgstr "显示桌面按钮高度（像素）"
+
+#: prefs.js:270
+msgid "Show Desktop button width (px)"
+msgstr "显示桌面按钮宽度（像素）"
+
+#: prefs.js:342
+msgid "Left"
+msgstr "左"
+
+#: prefs.js:343
+msgid "Center"
+msgstr "中"
+
+#: prefs.js:344
+msgid "Right"
+msgstr "右"
+
+#: prefs.js:346
+msgid "Top"
+msgstr "上"
+
+#: prefs.js:347 prefs.js:352
+msgid "Middle"
+msgstr "中"
+
+#: prefs.js:348
+msgid "Bottom"
+msgstr "下"
+
+#: prefs.js:351
+msgid "Start"
+msgstr "起始"
+
+#: prefs.js:353
+msgid "End"
+msgstr "末尾"
+
+#: prefs.js:495
+msgid "Show Applications button"
+msgstr "显示应用程序按钮"
+
+#: prefs.js:496
+msgid "Activities button"
+msgstr "活动按钮"
+
+#: prefs.js:497
+msgid "Taskbar"
+msgstr "任务栏"
+
+#: prefs.js:498
+msgid "Date menu"
+msgstr "日期菜单"
+
+#: prefs.js:499
+msgid "System menu"
+msgstr "系统菜单"
+
+#: prefs.js:500
+msgid "Left box"
+msgstr "左侧区域"
+
+#: prefs.js:501
+msgid "Center box"
+msgstr "中间区域"
+
+#: prefs.js:502
+msgid "Right box"
+msgstr "右侧区域"
+
+#: prefs.js:503
+msgid "Desktop button"
+msgstr "桌面按钮"
+
+#: prefs.js:524 prefs.js:3110
+msgid "Move up"
+msgstr "上移"
+
+#: prefs.js:526 prefs.js:3118
+msgid "Move down"
+msgstr "下移"
+
+#: prefs.js:532
+msgid "Visible"
+msgstr "可见"
+
+#: prefs.js:536
+msgid "Select element position"
+msgstr "选择元素位置"
+
+#: prefs.js:550
+msgid "Stacked to top"
+msgstr "靠上堆叠"
+
+#: prefs.js:550
+msgid "Stacked to left"
+msgstr "靠左堆叠"
+
+#: prefs.js:554
+msgid "Stacked to bottom"
+msgstr "靠下堆叠"
+
+#: prefs.js:554
+msgid "Stacked to right"
+msgstr "靠右堆叠"
+
+#: prefs.js:556
+msgid "Centered"
+msgstr "居中"
+
+#: prefs.js:557
+msgid "Monitor Center"
+msgstr "显示器中央"
+
+#: prefs.js:584
+msgid "More options"
+msgstr "更多选项"
+
+#: prefs.js:619
+msgid "Reset to defaults"
+msgstr "恢复默认"
+
+#: prefs.js:642
+msgid "Show Applications options"
+msgstr "显示应用程序选项"
+
+#: prefs.js:703
+msgid "Open icon"
+msgstr "打开图标"
+
+#: prefs.js:721
+msgid "Show Desktop options"
+msgstr "显示桌面选项"
+
+#: prefs.js:844
+msgid "Primary monitor"
+msgstr "主显示器"
+
+#: prefs.js:845
+msgid "Monitor "
+msgstr "显示器 "
+
+#: prefs.js:974
+msgid "Running Indicator Options"
+msgstr "运行指示器选项"
+
+#: prefs.js:1510
+msgid "Dynamic opacity options"
+msgstr "动态透明度选项"
+
+#: prefs.js:1934
+msgid "Intellihide options"
+msgstr "智能隐藏选项"
+
+#: prefs.js:2174
+msgid "Window preview options"
+msgstr "窗口预览选项"
+
+#: prefs.js:2654
+msgid "Isolate Workspaces options"
+msgstr "工作区隔离选项"
+
+#: prefs.js:2690
+msgid "Isolate monitors options"
+msgstr "显示器隔离选项"
+
+#: prefs.js:2789
+msgid "Ungrouped application options"
+msgstr "未分组应用选项"
+
+#: prefs.js:2956
+msgid "Customize middle-click behavior"
+msgstr "自定义中键点击行为"
+
+#: prefs.js:3085
+msgid "Text"
+msgstr "文本"
+
+#: prefs.js:3094
+msgid "Command"
+msgstr "命令"
+
+#: prefs.js:3126 workspacePreview.js:506
+msgid "Remove"
+msgstr "移除"
+
+#: prefs.js:3154
+msgid "Customize panel scroll behavior"
+msgstr "自定义面板滚动行为"
+
+#: prefs.js:3200
+msgid "Customize icon scroll behavior"
+msgstr "自定义图标滚动行为"
+
+#: prefs.js:3324
+msgid "Advanced hotkeys options"
+msgstr "高级快捷键选项"
+
+#: prefs.js:3352
+msgid "Secondary Menu Options"
+msgstr "次级菜单选项"
+
+#: prefs.js:3552
+#, javascript-format
+msgid "%d ms"
+msgstr "%d 毫秒"
+
+#: prefs.js:3558
+#, javascript-format
+msgid "%d °"
+msgstr "%d °"
+
+#: prefs.js:3564 prefs.js:3570
+#, javascript-format
+msgid "%d %%"
+msgstr "%d %%"
+
+#: prefs.js:3576
+#, javascript-format
+msgid "%.1f"
+msgstr "%.1f"
+
+#: prefs.js:3582
+#, javascript-format
+msgid "%d icon"
+msgid_plural "%d icons"
+msgstr[0] "%d 个图标"
+
+#: prefs.js:3709
+msgid "App icon animation options"
+msgstr "应用图标动画选项"
+
+#: prefs.js:3832
+msgid "App icon highlight options"
+msgstr "应用图标高亮选项"
+
+#: prefs.js:4010
+msgid "Export settings"
+msgstr "导出设置"
+
+#: prefs.js:4032
+msgid "Import settings"
+msgstr "导入设置"
+
+#: appIcons.js:1950 appIcons.js:1961 workspacePreview.js:1347
+msgid "Quit"
+msgstr "退出"
+
+#: appIcons.js:1967
+#, javascript-format
+msgid "Quit %d Window"
+msgid_plural "Quit %d Windows"
+msgstr[0] "退出 %d 个窗口"
+
+#: appIcons.js:2300
+msgid "Power options"
+msgstr "电源选项"
+
+#: appIcons.js:2305
+msgid "Event logs"
+msgstr "事件日志"
+
+#: appIcons.js:2310
+msgid "System"
+msgstr "系统"
+
+#: appIcons.js:2315
+msgid "Device Management"
+msgstr "设备管理"
+
+#: appIcons.js:2320
+msgid "Disk Management"
+msgstr "磁盘管理"
+
+#: appIcons.js:2351
+msgid "Unlock taskbar"
+msgstr "解锁任务栏"
+
+#: appIcons.js:2352
+msgid "Lock taskbar"
+msgstr "锁定任务栏"
+
+#: appIcons.js:2362
+msgid "Gnome Settings"
+msgstr "GNOME 设置"
+
+#: appIcons.js:2366
+msgid "Dash to Workspaces Settings"
+msgstr "Dash to Workspaces 设置"
+
+#: appIcons.js:2373
+msgid "Restore Windows"
+msgstr "恢复窗口"
+
+#: appIcons.js:2374
+msgid "Show Desktop"
+msgstr "显示桌面"
+
+#: workspacePreview.js:519
+msgid "No favorites"
+msgstr "无收藏"
+
+#: workspacePreview.js:1331
+msgid "New Window"
+msgstr "新建窗口"
+
+#: workspacePreview.js:1940
+msgid "Empty"
+msgstr "空"
+
+#: windowPreview.js:1155
+msgid "Move to current Workspace"
+msgstr "移动到当前工作区"
