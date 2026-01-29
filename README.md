@@ -125,7 +125,7 @@ Once the extension is published on [extensions.gnome.org](https://extensions.gno
 
 ## Requirements
 
-- GNOME Shell 48 或 49（以 `metadata.json` 中 `shell-version` 为准）。
+- GNOME Shell  49（以 `metadata.json` 中 `shell-version` 为准）。
 
 ---
 
@@ -142,24 +142,6 @@ dconf reset -f /org/gnome/shell/extensions/dash-to-workspaces/
 ```
 
 ---
-
-## 发布前检查（Publishing checklist）
-
-发布到 GitHub 或 [extensions.gnome.org](https://extensions.gnome.org/) 前建议确认：
-
-| 项目 | 说明 |
-|------|------|
-| **metadata.json** | `name`、`description`、`uuid`、`url`、`shell-version`、`version` 正确；`uuid` 与扩展文件夹名一致（如 `dash-to-workspaces@dingmingglc`）。 |
-| **许可证** | [COPYING](COPYING) 存在且为 GPL-2.0-or-later；README 中注明 License。 |
-| **敏感信息** | 代码与配置中无 API Key、密码、Personal Access Token 等；`.cursor/` 规则里若提到 token 仅作说明，勿把真实 token 提交进仓库。 |
-| **.gitignore** | 建议忽略 `.git/`、`.cursor/` 等，避免把本地/IDE 配置推上去；若用 GitHub，可再忽略 `*.mo` 的本地编译产物（可选，因 .mo 通常需随仓库发布以便离线安装）。 |
-| **扩展网站 zip** | 上传到 extensions.gnome.org 时，zip 内为扩展**根目录下的所有文件**（如 `extension.js`、`metadata.json`、`schemas/`、`locale/` 等），不要多一层以 UUID 命名的父文件夹（按网站要求）。 |
-| **shell-version** | 与当前 GNOME 版本对应；仅写你测试过的版本（如 `["48","49"]`），避免承诺未测试版本。 |
-
-当前已知差异或注意点：
-
-- **README 与 metadata**：若你修改了 `metadata.json` 的 `shell-version`，请同步改 README 的 Requirements 小节。
-- **.gitignore**：若仓库根目录尚无 `.gitignore`，建议新建并加入 `.cursor/` 等，避免误提交。
 
 ---
 
