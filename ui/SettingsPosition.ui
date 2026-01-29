@@ -28,6 +28,13 @@
     <property name="step-increment">1</property>
     <property name="page-increment">5</property>
   </object>
+  <object class="GtkAdjustment" id="workspace_preview_app_icon_size_adjustment">
+    <property name="lower">16</property>
+    <property name="upper">96</property>
+    <property name="value">48</property>
+    <property name="step-increment">2</property>
+    <property name="page-increment">8</property>
+  </object>
   <object class="AdwPreferencesPage" id="position">
     <property name="icon-name">find-location-symbolic</property>
     <property name="title" translatable="yes">Position</property>
@@ -301,6 +308,22 @@
         </child>
         <child>
           <object class="AdwActionRow">
+            <property name="subtitle" translatable="yes">Size of the app icons shown below each workspace preview</property>
+            <property name="title" translatable="yes">App icon size</property>
+            <child>
+              <object class="GtkScale" id="workspace_preview_app_icon_size_scale">
+                <property name="adjustment">workspace_preview_app_icon_size_adjustment</property>
+                <property name="digits">0</property>
+                <property name="draw-value">True</property>
+                <property name="round-digits">0</property>
+                <property name="value-pos">right</property>
+                <property name="width-request">300</property>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="AdwActionRow">
             <property name="subtitle" translatable="yes">Position of workspace name relative to preview</property>
             <property name="title" translatable="yes">Name position</property>
             <child>
@@ -311,6 +334,17 @@
                   <item id="BOTTOM_LEFT" translatable="yes">Bottom Left (Inside)</item>
                   <item id="BELOW" translatable="yes">Below Preview</item>
                 </items>
+              </object>
+            </child>
+          </object>
+        </child>
+        <child>
+          <object class="AdwActionRow">
+            <property name="subtitle" translatable="yes">If enabled, icons keep a stable order (do not reorder when activating apps)</property>
+            <property name="title" translatable="yes">Keep app icons order</property>
+            <child>
+              <object class="GtkSwitch" id="workspace_preview_app_icons_stable_order_switch">
+                <property name="valign">center</property>
               </object>
             </child>
           </object>

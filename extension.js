@@ -152,20 +152,26 @@ export default class DashToWorkspacesExtension extends Extension {
         return
       }
     }
-    completeEnable()
+    // 启动更顺滑：把 enable 的重活（创建面板/预览/缩略图）推迟到 idle，
+    // 让 GNOME Shell 先完成当前帧渲染，避免“启用瞬间卡一下”。
+    ubuntuDockDelayId = GLib.idle_add(
+      GLib.PRIORITY_DEFAULT_IDLE,
+      completeEnable,
+    )
   }
 
   disable() {
     if (ubuntuDockDelayId) GLib.Source.remove(ubuntuDockDelayId)
 
     PanelSettings.disable(SETTINGS)
-    panelManager.disable()
+    if (panelManager) panelManager.disable()
     PanelSettings.clearCache()
 
     DTP_EXTENSION = null
     SETTINGS = null
     DESKTOPSETTINGS = null
     TERMINALSETTINGS = null
+    NOTIFICATIONSSETTINGS = null
     panelManager = null
 
     delete global.workspacesToDock

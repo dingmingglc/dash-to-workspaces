@@ -75,6 +75,20 @@ export const Intellihide = class {
     this.enabled = false
   }
 
+  // 右键“立即启用自动隐藏”时使用：跳过 enable-start-delay，并立刻把面板藏起来。
+  // 同时清掉 hover 状态，避免立刻又被判定为“应显示”而弹回。
+  hideImmediatelyAfterToggle() {
+    if (!this.enabled) return
+    try {
+      this._timeoutsHandler.remove(T4)
+    } catch (e) {
+      // ignore
+    }
+    this._hover = false
+    this._hoveredOut = true
+    this._hidePanel(true)
+  }
+
   init() {
     this._changeEnabledStatus()
   }
@@ -360,25 +374,33 @@ export const Intellihide = class {
   }
 
   _checkMousePointer(x, y) {
+    // 防止扩展禁用或面板销毁后仍被 PointerWatcher 回调访问导致崩溃
+    if (!this.enabled || !this._dtpPanel?.geom || !this._monitor) return
+
+    // 显示区域：仅由“Hovering the panel area keeps the panel revealed”控制
+    // - 未选中：只有鼠标到屏幕最边缘（1px）才触发显示
+    // - 选中：鼠标进入整个面板区域（含预览区）即触发显示
+    let revealZoneOffset = SETTINGS.get_boolean('intellihide-revealed-hover')
+      ? this._dtpPanel.geom.outerSize + this._dtpPanel.geom.topOffset
+      : 1
+
     if (
       !this._pressureBarrier &&
       !this._hover &&
       !Main.overview.visible &&
-      this._pointerIn(x, y, 1, 'intellihide-use-pointer-limit-size')
+      this._pointerIn(x, y, revealZoneOffset, 'intellihide-use-pointer-limit-size')
     ) {
       this._hover = true
       this._queueUpdatePanelPosition(true)
     } else if (this._panelBox.visible) {
-      let keepRevealedOnHover = SETTINGS.get_boolean(
-        'intellihide-revealed-hover',
-      )
-      let fixedOffset = keepRevealedOnHover
-        ? this._dtpPanel.geom.outerSize + this._dtpPanel.geom.topOffset
-        : 1
+      // 隐藏逻辑：只要鼠标还在整个面板区域（含任务栏+预览区）内就不隐藏
+      // 与“Hovering the panel area keeps the panel revealed”无关，统一按“全区域”判断
+      let fullPanelOffset =
+        this._dtpPanel.geom.outerSize + this._dtpPanel.geom.topOffset
       let hover = this._pointerIn(
         x,
         y,
-        fixedOffset,
+        fullPanelOffset,
         'intellihide-revealed-hover-limit-size',
       )
 
@@ -391,6 +413,7 @@ export const Intellihide = class {
   }
 
   _pointerIn(x, y, fixedOffset, limitSizeSetting) {
+    if (!this._dtpPanel?.geom || !this._monitor) return false
     let geom = this._dtpPanel.geom
     let position = geom.position
     let varCoordX1 = this._monitor.x
@@ -399,6 +422,7 @@ export const Intellihide = class {
 
     if (geom.dockMode && SETTINGS.get_boolean(limitSizeSetting)) {
       let alloc = this._dtpPanel.allocation
+      if (!alloc) return false
 
       if (!geom.dynamic) {
         // when fixed, use the panel clipcontainer which is positioned
@@ -432,6 +456,7 @@ export const Intellihide = class {
   }
 
   _queueUpdatePanelPosition(fromRevealMechanism) {
+    if (!this.enabled || !this._dtpPanel?.panelBox) return
     if (
       !fromRevealMechanism &&
       this._timeoutsHandler.getId(T2) &&
@@ -460,6 +485,7 @@ export const Intellihide = class {
   }
 
   _checkIfShouldBeVisible(fromRevealMechanism) {
+    if (!this._dtpPanel?.taskbar) return false
     if (
       Main.overview.visibleTarget ||
       this._dtpPanel.taskbar.previewMenu.opened ||

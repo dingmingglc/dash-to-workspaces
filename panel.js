@@ -35,7 +35,6 @@ import Graphene from 'gi://Graphene'
 import * as AppIcons from './appIcons.js'
 import * as Utils from './utils.js'
 import * as Taskbar from './taskbar.js'
-import * as TaskbarItemContainer from './taskbar.js'
 import * as Pos from './panelPositions.js'
 import * as PanelSettings from './panelSettings.js'
 import * as PanelStyle from './panelStyle.js'
@@ -797,8 +796,9 @@ export const Panel = GObject.registerClass(
         this.monitor,
       )
       let isOverview = !!Main.overview.visibleTarget
-      let isOverviewFocusedMonitor = isOverview && isFocusedMonitor
-      let isShown = !isOverview || isOverviewFocusedMonitor
+      // 用户需求：在 Overview 里完全不显示 DtW 面板（不区分主/副显示器）
+      // 注：isFocusedMonitor 保留变量以避免大范围改动，但 Overview 时始终隐藏
+      let isShown = !isOverview
       let actorData = Utils.getTrackedActorData(this.panelBox)
 
       // prevent the "chrome" to update the panelbox visibility while in overview
@@ -984,8 +984,22 @@ export const Panel = GObject.registerClass(
           }
         }
         
-        h = this.monitor.height * length - topBottomMargins - gsTopPanelHeight
-        dockMode = !!dynamic || topBottomMargins > 0 || h < this.monitor.height
+        // 注意：面板 y 会加上 topInset（避让顶部面板/DTP）。
+        // 如果高度仍按 monitor.height 计算，会导致底部超出屏幕，进而 workspace 预览无法正确“塞进屏幕”。
+        // 这里用“可用高度 = monitor.height - topInset”来计算高度，保证永远不超过屏幕底部。
+        const topInsetTmp = (() => {
+          let inset = gsTopPanelHeight
+          if (
+            SETTINGS.get_boolean('workspace-preview-avoid-dash-to-panel') &&
+            global.dashToPanel?.panels?.length
+          ) {
+            inset = Math.max(inset, this._getExternalTopInsetPx())
+          }
+          return inset
+        })()
+        const availH = Math.max(0, this.monitor.height - topInsetTmp)
+        h = availH * length - topBottomMargins
+        dockMode = !!dynamic || topBottomMargins > 0 || h < availH
         fixedPadding = sidePadding * scaleFactor
         varPadding = topBottomPadding * scaleFactor
         outerSize += sideMargins
@@ -1045,11 +1059,11 @@ export const Panel = GObject.registerClass(
         if (!vertical && anchor == Pos.MIDDLE)
           x += (this.monitor.width - w - sideMargins) * 0.5
         else if (vertical && anchor == Pos.MIDDLE)
-          y += (this.monitor.height - h - topBottomMargins) * 0.5
+          y += (Math.max(0, this.monitor.height - topInset) - h - topBottomMargins) * 0.5
         else if (!vertical && anchor == Pos.END)
           x += this.monitor.width - w - sideMargins
         else if (vertical && anchor == Pos.END)
-          y += this.monitor.height - h - topBottomMargins
+          y += Math.max(0, this.monitor.height - topInset) - h - topBottomMargins
       }
 
       innerSize -= fixedPadding * 2
@@ -1207,10 +1221,16 @@ export const Panel = GObject.registerClass(
 
         group.elements.forEach((element) => {
           if (!update) {
-            element.box[this.fixedCoord.c1] =
-              panelAlloc[this.fixedCoord.c1] + this.geom.fixedPadding
-            element.box[this.fixedCoord.c2] =
-              panelAlloc[this.fixedCoord.c2] - this.geom.fixedPadding
+            // 默认所有元素都避开 fixedPadding（顶部/底部或左右内边距）
+            // 但“九宫格（Show Applications）”需要更大：允许使用 fixedPadding 区域
+            // 这样不改变整条面板厚度，也能让该按钮显著变大。
+            const useFullThickness = element.position === Pos.SHOW_APPS_BTN
+            element.box[this.fixedCoord.c1] = useFullThickness
+              ? panelAlloc[this.fixedCoord.c1]
+              : panelAlloc[this.fixedCoord.c1] + this.geom.fixedPadding
+            element.box[this.fixedCoord.c2] = useFullThickness
+              ? panelAlloc[this.fixedCoord.c2]
+              : panelAlloc[this.fixedCoord.c2] - this.geom.fixedPadding
             element.natSize = element.actor[this.sizeFunc](-1)[1]
           }
 
@@ -1592,7 +1612,7 @@ export const Panel = GObject.registerClass(
         if (
           !actor ||
           actor instanceof Dash.DashItemContainer ||
-          actor instanceof TaskbarItemContainer.TaskbarItemContainer
+          actor instanceof Taskbar.TaskbarItemContainer
         ) {
           return
         }

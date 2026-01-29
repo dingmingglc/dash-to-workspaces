@@ -294,7 +294,27 @@ export const Taskbar = class extends EventEmitter {
 
     this._showAppsIcon.childScale = 1
     this._showAppsIcon.childOpacity = 255
-    this._showAppsIcon.icon.setIconSize(this.iconSize)
+    // 放大应用按钮图标（右上角九宫格）：尽量使用接近面板厚度的尺寸
+    // 备注：this.iconSize 已经扣除了 appicon-padding，因此这里把 padding 加回去
+    // 来获得更“饱满”的图标尺寸，同时避免超过面板厚度导致裁切。
+    {
+      // 现在 ShowApps 在分配时允许使用 fixedPadding 区域（见 panel.js），
+      // 因此可以把最大可用尺寸提高到 iconSize + fixedPadding*2。
+      const scale = Utils.getScaleFactor()
+      const maxThicknessPx =
+        (this.dtpPanel.geom.iconSize + this.dtpPanel.geom.fixedPadding * 2) /
+        scale
+      const showAppsSize = Math.round(maxThicknessPx)
+      this._showAppsIcon.icon.setIconSize(showAppsSize)
+      // 强制覆盖主题对 show-apps 图标的限制（某些主题会让九宫格始终很小）
+      try {
+        this._showAppsIcon.icon._iconActor?.set_style?.(
+          `icon-size: ${showAppsSize}px;`,
+        )
+      } catch (e) {
+        // ignore
+      }
+    }
     this._hookUpLabel(this._showAppsIcon, this._showAppsIconWrapper)
 
     this._container.add_child(new St.Widget({ width: 0, reactive: false }))
@@ -951,8 +971,10 @@ export const Taskbar = class extends EventEmitter {
   }
 
   _adjustIconSize() {
-    let panelSize = this.dtpPanel.geom.iconSize / Utils.getScaleFactor()
-    let availSize = panelSize - SETTINGS.get_int('appicon-padding') * 2
+    let scaleFactor = Utils.getScaleFactor()
+    let panelSize = this.dtpPanel.geom.iconSize / scaleFactor
+    let pad = SETTINGS.get_int('appicon-padding')
+    let availSize = panelSize - pad * 2
     let minIconSize = MIN_ICON_SIZE + (panelSize % 2)
 
     if (availSize == this.iconSize) return
@@ -965,16 +987,35 @@ export const Taskbar = class extends EventEmitter {
     // icons and which are not animating out (which means they will be
     // destroyed at the end of the animation)
     let iconChildren = this._getTaskbarIcons().concat([this._showAppsIcon])
-    let scale = this.iconSize / availSize
+    let oldIconSize = this.iconSize
+    let oldShowAppsSize = Math.round(
+      (this.dtpPanel.geom.iconSize + this.dtpPanel.geom.fixedPadding * 2) /
+        scaleFactor,
+    )
+    let scale = oldIconSize / availSize
 
     this.iconSize = availSize
+    let newShowAppsSize = Math.round(
+      (this.dtpPanel.geom.iconSize + this.dtpPanel.geom.fixedPadding * 2) /
+        scaleFactor,
+    )
 
     for (let i = 0; i < iconChildren.length; i++) {
       let icon = iconChildren[i].child._delegate.icon
 
       // Set the new size immediately, to keep the icons' sizes
       // in sync with this.iconSize
-      icon.setIconSize(this.iconSize)
+      // 如果是应用按钮图标，使用更大的尺寸（接近面板厚度）
+      let iconSize =
+        iconChildren[i] === this._showAppsIcon ? newShowAppsSize : this.iconSize
+      icon.setIconSize(iconSize)
+      if (iconChildren[i] === this._showAppsIcon) {
+        try {
+          icon._iconActor?.set_style?.(`icon-size: ${newShowAppsSize}px;`)
+        } catch (e) {
+          // ignore
+        }
+      }
 
       // Don't animate the icon size change when the overview
       // is transitioning, or when initially filling
@@ -985,7 +1026,14 @@ export const Taskbar = class extends EventEmitter {
 
       // Scale the icon's texture to the previous size and
       // tween to the new size
-      icon.icon.set_size(icon.icon.width * scale, icon.icon.height * scale)
+      let localScale =
+        iconChildren[i] === this._showAppsIcon
+          ? oldShowAppsSize / newShowAppsSize
+          : scale
+      icon.icon.set_size(
+        icon.icon.width * localScale,
+        icon.icon.height * localScale,
+      )
 
       Utils.animate(icon.icon, {
         width: targetWidth,

@@ -495,6 +495,11 @@
      <summary>Panel context menu titles</summary>
      <description>Titles for commands added to panel right click menu</description>
     </key>
+    <key type="as" name="workspace-preview-shortcut-apps">
+      <default>[]</default>
+      <summary>Workspace preview shortcuts</summary>
+      <description>App IDs for the 5 shortcut icons shown at the bottom of the workspace preview (independent from system favorites)</description>
+    </key>
     <key type="b" name="show-activities-button">
       <default>false</default>
       <summary>Show activities button</summary>
@@ -1441,6 +1446,16 @@
       <default>'BOTTOM_RIGHT'</default>
       <summary>Workspace preview name position</summary>
       <description>Position of workspace name: BOTTOM_RIGHT (inside bottom-right), BOTTOM_LEFT (inside bottom-left), or BELOW (below preview)</description>
+    </key>
+    <key type="b" name="workspace-preview-app-icons-stable-order">
+      <default>true</default>
+      <summary>Keep workspace preview app icons order</summary>
+      <description>If enabled, the app icons shown below each workspace preview keep a stable order and do not reorder when you activate an app. If disabled, icons are sorted by recent usage.</description>
+    </key>
+    <key type="i" name="workspace-preview-app-icon-size">
+      <default>48</default>
+      <summary>Workspace preview app icon size</summary>
+      <description>Size (in pixels) of the app icons shown below each workspace preview.</description>
     </key>
     <key type="b" name="workspace-preview-avoid-dash-to-panel">
       <default>true</default>

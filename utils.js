@@ -247,21 +247,15 @@ export const getSystemMenuInfo = function () {
 }
 
 export function getOverviewWorkspaces() {
-  let workspaces = []
-
-  Main.overview._overview._controls._workspacesDisplay._workspacesViews.forEach(
-    (wv) =>
-      (workspaces = [
-        ...workspaces,
-        ...(wv._workspaces || []), // WorkspacesDisplay --> WorkspacesView (primary monitor)
-        ...(wv._workspacesView?._workspaces || []), // WorkspacesDisplay --> SecondaryMonitorDisplay --> WorkspacesView
-        ...(wv._workspacesView?._workspace // WorkspacesDisplay --> SecondaryMonitorDisplay --> ExtraWorkspaceView
-          ? [wv._workspacesView?._workspace]
-          : []),
-      ]),
+  return Main.overview._overview._controls._workspacesDisplay._workspacesViews.flatMap(
+    (wv) => [
+      ...(wv._workspaces || []), // WorkspacesDisplay --> WorkspacesView (primary monitor)
+      ...(wv._workspacesView?._workspaces || []), // WorkspacesDisplay --> SecondaryMonitorDisplay --> WorkspacesView
+      ...(wv._workspacesView?._workspace // WorkspacesDisplay --> SecondaryMonitorDisplay --> ExtraWorkspaceView
+        ? [wv._workspacesView._workspace]
+        : []),
+    ],
   )
-
-  return workspaces
 }
 
 export const getCurrentWorkspace = function () {
@@ -758,7 +752,7 @@ export const DominantColorExtractor = class {
     }
 
     // Unable to load the icon texture, use fallback
-    if (iconTexture instanceof St.Icon === false) {
+    if (!(iconTexture instanceof St.Icon)) {
       return null
     }
 

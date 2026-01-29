@@ -3950,6 +3950,18 @@ const Preferences = class {
       })
 
     this._builder
+      .get_object('workspace_preview_app_icon_size_scale')
+      .set_value(this._settings.get_int('workspace-preview-app-icon-size'))
+    this._builder
+      .get_object('workspace_preview_app_icon_size_scale')
+      .connect('value-changed', (widget) => {
+        this._settings.set_int(
+          'workspace-preview-app-icon-size',
+          Math.round(widget.get_value()),
+        )
+      })
+
+    this._builder
       .get_object('workspace_preview_name_position_combo')
       .set_active_id(
         this._settings.get_string('workspace-preview-name-position'),
@@ -3958,6 +3970,16 @@ const Preferences = class {
         'workspace-preview-name-position',
         this._builder.get_object('workspace_preview_name_position_combo'),
         'active-id',
+        Gio.SettingsBindFlags.DEFAULT,
+      )
+
+      // Workspace preview app icons order
+      this._settings.bind(
+        'workspace-preview-app-icons-stable-order',
+        this._builder.get_object(
+          'workspace_preview_app_icons_stable_order_switch',
+        ),
+        'active',
         Gio.SettingsBindFlags.DEFAULT,
       )
 

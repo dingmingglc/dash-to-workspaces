@@ -265,6 +265,33 @@
   color: rgba(255,255,255,0.8);
 }
 
+.workspace-preview-shortcuts-bar {
+  /* 预览区底部快捷栏：固定占一行高度 */
+  padding: 0px 4px;
+  spacing: 6px;
+}
+
+.workspace-preview-shortcut-button {
+  padding: 2px;
+  margin: 0px;
+  border-radius: 6px;
+  background-color: transparent;
+  transition-duration: 150ms;
+}
+
+.workspace-preview-shortcut-button:hover {
+  background-color: rgba(255, 255, 255, 0.2);
+}
+
+.workspace-preview-shortcut-icon {
+  padding: 0px;
+  margin: 0px;
+}
+
+.workspace-preview-shortcut-icon-placeholder {
+  color: rgba(255,255,255,0.75);
+}
+
 #dashtopanelScrollview .number-overlay {
 	background-color: rgba(0,0,0,0.8);
 }

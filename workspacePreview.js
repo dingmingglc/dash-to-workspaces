@@ -26,8 +26,11 @@ import { gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.j
 const PREVIEW_HEIGHT = 120
 const NAME_HEIGHT = 30
 const WM_PREFS_SCHEMA = 'org.gnome.desktop.wm.preferences'
-const APP_ICON_SIZE = 32
+// workspace 预览下方应用图标默认尺寸（px）
+const DEFAULT_APP_ICON_SIZE = 48
 const APP_ICON_MAX = 8
+const SHORTCUT_SLOTS = 5
+const MIN_PREVIEW_HEIGHT = 24
 
 export const WorkspacePreviewView = GObject.registerClass(
   {},
@@ -36,25 +39,60 @@ export const WorkspacePreviewView = GObject.registerClass(
       super._init({
         layout_manager: new Clutter.BoxLayout({
           orientation: Clutter.Orientation.VERTICAL,
-          spacing: SETTINGS.get_int('workspace-preview-spacing'),
+          // 根容器不做 item spacing：workspace 列表的 spacing 由 _wsList 控制；
+          // 这样底部快捷栏才能稳定固定在底部且不参与 workspace 数量计算。
+          spacing: 0,
         }),
         style_class: 'workspace-preview-view',
         reactive: true,
+        // 防止 workspace/图标溢出到面板外（即便计算时序还没更新到位，也不允许画到屏幕外）
+        clip_to_allocation: true,
       })
 
       this.panel = panel
+      // workspace 列表容器（可伸缩，底部快捷栏不在此容器内）
+      this._wsList = new St.Widget({
+        layout_manager: new Clutter.BoxLayout({
+          orientation: Clutter.Orientation.VERTICAL,
+          spacing: SETTINGS.get_int('workspace-preview-spacing'),
+        }),
+        reactive: false,
+        clip_to_allocation: true,
+        x_expand: true,
+        y_expand: true,
+      })
+      this.add_child(this._wsList)
       this._workspaceItems = []
       this._signalsHandler = new Utils.GlobalSignalsHandler()
       this._timeoutsHandler = new Utils.TimeoutsHandler()
       this._iconMenuManager = new PopupMenu.PopupMenuManager(this)
       this._dragInProgress = false
       this._iconDrag = null
+      this._dtwDestroyed = false
       this._lastWorkAreaKey = null
       this._didInitialWindowRefresh = false
       this._dropHighlightItem = null
+      // 预览区底部快捷栏（固定 5 个槽位）
+      this._shortcutsBar = null
+      this._shortcutsButtons = []
       // window->app 缓存（WeakMap：窗口销毁时自动清理）
       this._windowAppCache = new WeakMap()
       this._tracker = Shell.WindowTracker.get_default()
+      // 每个 workspace 的图标稳定排序（避免激活后“最近使用”导致图标互换）
+      // workspaceIndex -> Map(appId -> orderNumber)
+      this._workspaceAppOrder = new Map()
+      this._workspaceAppOrderNext = new Map()
+      // focused icon 追踪：只更新“上一个 + 当前”两个按钮
+      this._lastFocusedIcon = null // { wsIndex, appId }
+      // 防止回退重建过程中被重复触发
+      this._dtwRebuildInProgress = false
+      // workspace 名称设置（复用同一个 Gio.Settings，避免每次创建）
+      this._wmPrefs = null
+      try {
+        this._wmPrefs = new Gio.Settings({ schema_id: WM_PREFS_SCHEMA })
+      } catch (e) {
+        this._wmPrefs = null
+      }
 
       // 在整个预览区域内滚轮切换 workspace（与任务栏一致）
       // 用 panel 的原始滚轮逻辑，保证设置项/行为完全一致
@@ -75,33 +113,50 @@ export const WorkspacePreviewView = GObject.registerClass(
         (actor, event) => this._handleRightClick(actor, event),
       ])
 
+      // 预览视图自身 allocation 变化时，只做几何更新（避免每个 item 都监听 allocation）
+      this._signalsHandler.add([
+        this,
+        'notify::allocation',
+        () => {
+          this._timeoutsHandler.add([
+            'ws-preview-self-alloc-geom',
+            50,
+            () => this._updateWorkspacesGeometry(),
+          ])
+        },
+      ])
+
+      // workspace 列表高度变化时也要重算（新增 workspace / 样式变化会影响可用高度）
+      this._signalsHandler.add([
+        this._wsList,
+        'notify::allocation',
+        () => {
+          this._timeoutsHandler.add([
+            'ws-preview-list-alloc-geom',
+            50,
+            () => this._updateWorkspacesGeometry(),
+          ])
+        },
+      ])
+
       // 监听设置变化
       this._connectSettingsSignals()
 
       // 监听工作区变化
       this._connectSignals()
 
-      // 监听扩展状态变化（用于检测 Dash to Panel）
-      this._extensionManager = Main.extensionManager
-      this._extensionStateChangedId = this._extensionManager.connect(
-        'extension-state-changed',
-        () => {
-          // Dash to Panel 状态变化时更新布局
-          this._timeoutsHandler.add([
-            'ws-preview-dtp-check',
-            100,
-            () => this._updateLayout(),
-          ])
-        },
-      )
-
-      // 初始更新
-      this._updateWorkspaces()
-
       // 延迟更新布局和可见性，确保面板已经布局完成
       GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
         this._updateLayout()
         this._updateVisibility()
+        // 快捷栏先初始化出来，保证底部始终预留一块图标高的区域
+        this._ensureShortcutsBar()
+        // 启动更顺滑：把 WorkspaceThumbnail/背景等重建推迟到更低优先级的 idle
+        // 避免启用扩展瞬间同步创建所有 workspace 缩略图导致掉帧。
+        GLib.idle_add(GLib.PRIORITY_LOW, () => {
+          if (!this._workspaceItems?.length) this._updateWorkspaces()
+          return GLib.SOURCE_REMOVE
+        })
         return GLib.SOURCE_REMOVE
       })
     }
@@ -122,11 +177,20 @@ export const WorkspacePreviewView = GObject.registerClass(
           SETTINGS,
           'changed::workspace-preview-width',
           () => {
+            // 仅几何变化：避免重建缩略图/背景导致卡顿
             this._updateLayout()
-            this._updateWorkspaces()
+            if (this._workspaceItems?.length) this._updateWorkspacesGeometry()
+            else this._updateWorkspaces()
           },
         ],
-        [SETTINGS, 'changed::workspace-preview-spacing', () => this._updateWorkspaces()],
+        [
+          SETTINGS,
+          'changed::workspace-preview-spacing',
+          () => {
+            // 只影响条目间距：不必重建
+            this._updateListSpacingForIconSize()
+          },
+        ],
         [
           SETTINGS,
           'changed::workspace-preview-name-position',
@@ -134,10 +198,472 @@ export const WorkspacePreviewView = GObject.registerClass(
         ],
         [
           SETTINGS,
-          'changed::workspace-preview-avoid-dash-to-panel',
-          () => this._updateLayout(),
+          'changed::workspace-preview-app-icons-stable-order',
+          () => {
+            // 切换排序策略时，清空稳定排序缓存并刷新当前图标
+            this._workspaceAppOrder?.clear?.()
+            this._workspaceAppOrderNext?.clear?.()
+            for (let item of this._workspaceItems || []) {
+              try {
+                item?._dtwUpdateAppIcons?.()
+              } catch (e) {
+                // ignore
+              }
+            }
+          },
+        ],
+        [
+          SETTINGS,
+          'changed::workspace-preview-app-icon-size',
+          () => {
+            // 图标尺寸变化时需要强制重建（签名需要包含 iconSize）
+            this._updateListSpacingForIconSize()
+            this._updateShortcutsBar()
+            for (let item of this._workspaceItems || []) {
+              try {
+                item._dtwIconSig = null
+                item?._dtwUpdateAppIcons?.()
+              } catch (e) {
+                // ignore
+              }
+            }
+          },
+        ],
+        [
+          SETTINGS,
+          'changed::workspace-preview-shortcut-apps',
+          () => this._updateShortcutsBar(),
         ],
       )
+    }
+
+    _getPreviewAppIconSize() {
+      // 预览区下方应用图标大小（允许设置覆盖）
+      let iconSize = DEFAULT_APP_ICON_SIZE
+      try {
+        iconSize = SETTINGS.get_int('workspace-preview-app-icon-size')
+      } catch (e) {
+        iconSize = DEFAULT_APP_ICON_SIZE
+      }
+      return Math.max(16, Math.min(96, iconSize))
+    }
+
+    _updateListSpacingForIconSize() {
+      // 图标层向下溢出时，条目间距需要随图标尺寸调整，否则大图标会挤/遮挡
+      let layout = this._wsList?.get_layout_manager?.()
+      if (!layout) return
+
+      let base = 0
+      let namePosition = 'BOTTOM_RIGHT'
+      try {
+        base = SETTINGS.get_int('workspace-preview-spacing')
+        namePosition = SETTINGS.get_string('workspace-preview-name-position')
+      } catch (e) {
+        base = 0
+        namePosition = 'BOTTOM_RIGHT'
+      }
+
+      let extra = 0
+      // 只要启用了“预览内叠加层（包含底部 app icons）”，就需要为“向下溢出”的图标行预留额外间距。
+      // 说明：图标按钮本身在 CSS 里有 padding(2px) + focused border(1px)，
+      // 因此实际占用高度略大于 iconSize；这里把这些额外像素也计入，避免用户把图标调大后间距不跟着变。
+      if (namePosition !== 'BELOW') {
+        const iconSize = this._getPreviewAppIconSize()
+        const chromeOverheadPx = 6 // 约等于 2*padding(2px) + 2*border(1px)
+        extra = Math.ceil((iconSize + chromeOverheadPx) / 2)
+      }
+
+      layout.set_spacing(base + extra)
+
+      // 最后一个 workspace 的图标也会向下溢出，需要给列表底部预留空间，
+      // 否则会被“底部快捷栏”挤住/覆盖。
+      try {
+        const padBottom = extra
+        this._wsList.set_style(`padding-bottom: ${padBottom}px;`)
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    _getWorkspaceListAvailableHeightPx() {
+      // 可用于 workspace items 的高度：排除底部快捷栏一行
+      // 注意：不能用 _wsList 的 allocation（它已经包含了所有 items 的实际高度，包括溢出），
+      // 应该用父容器（this）的 allocation 减去快捷栏高度，这才是“可用空间上限”。
+      let totalH = 0
+      try {
+        const box = this.get_allocation_box()
+        totalH = (box.y2 - box.y1) || 0
+      } catch (e) {
+        totalH = 0
+      }
+
+      // 如果还没 allocation，尝试用 monitor 和 panel 的几何信息估算（避免早期阶段算出 0）
+      if (!totalH && this.panel?.monitor && this.panel?.geom) {
+        const isSidePanel =
+          this.panel.geom.position === St.Side.LEFT ||
+          this.panel.geom.position === St.Side.RIGHT
+        if (isSidePanel) {
+          // 左/右面板：预览区域高度应该等于屏幕高度减去顶部避让
+          // 注意：不能直接用 this.panel.geom.h，因为它可能已经考虑了面板长度（length）和边距
+          // 预览区域应该填满整个屏幕高度（减去顶部避让），不受面板长度设置影响
+          let topInset = 0
+          try {
+            // 复用 panel 的顶部避让计算方法（避免重复实现）
+            if (
+              SETTINGS.get_boolean('workspace-preview-avoid-dash-to-panel') &&
+              global.dashToPanel?.panels?.length &&
+              this.panel._getExternalTopInsetPx
+            ) {
+              topInset = this.panel._getExternalTopInsetPx()
+            }
+          } catch (e) {
+            topInset = 0
+          }
+          totalH = Math.max(0, this.panel.monitor.height - topInset)
+        } else {
+          // 上/下面板：预览区域高度 = 预览厚度（固定值）
+          try {
+            totalH = SETTINGS.get_int('workspace-preview-width') || 0
+          } catch (e) {
+            totalH = 0
+          }
+        }
+      }
+
+      // 快捷栏高度：优先用已设置的 height，否则按图标大小估算
+      let barH = 0
+      try {
+        barH = this._shortcutsBar?.height ?? 0
+      } catch (e) {
+        barH = 0
+      }
+      if (!barH) {
+        barH = this._getPreviewAppIconSize() + 10
+      }
+
+      return Math.max(0, totalH - barH)
+    }
+
+    _computePreviewHeight(previewWidth, workspaceCount, namePosition) {
+      // 先按 workarea 比例算“理想高度”，再按可用高度缩小以塞下全部 workspace。
+      let ideal = PREVIEW_HEIGHT
+      try {
+        const wa = Main.layoutManager.getWorkAreaForMonitor(this.panel.monitor.index)
+        if (wa && wa.width > 0 && wa.height > 0) {
+          ideal = Math.round((previewWidth * wa.height) / wa.width)
+        }
+      } catch (e) {
+        // ignore
+      }
+
+      const avail = this._getWorkspaceListAvailableHeightPx()
+      const n = Math.max(1, workspaceCount || 1)
+
+      // 列表 spacing（workspace items 之间）
+      let spacing = 0
+      try {
+        spacing = this._wsList?.get_layout_manager?.()?.get_spacing?.() ?? 0
+      } catch (e) {
+        spacing = 0
+      }
+
+      // namePosition == BELOW 时，label 会占额外高度（约 NAME_HEIGHT + 4）
+      const belowExtra = namePosition === 'BELOW' ? NAME_HEIGHT + 4 : 0
+      // workspace item 自身的 “chrome” 高度（CSS border 等）。当前样式是 2px border，上下共约 4px。
+      const itemChrome = 4
+      // 底部图标溢出高度：最后一个 workspace 也需要预留（通过 _wsList 的 padding-bottom 实现）
+      const iconOverflowPx =
+        namePosition === 'BELOW'
+          ? 0
+          : Math.ceil((this._getPreviewAppIconSize() + 6) / 2)
+
+      // _wsList 的 padding-bottom 也需要计入（它会影响列表的实际占用高度）
+      // 注意：padding-bottom 的值等于 iconOverflowPx（由 _updateListSpacingForIconSize 设置）
+      // 两者计算逻辑一致：Math.ceil((iconSize + chromeOverheadPx) / 2)
+      // 直接使用 iconOverflowPx，避免从样式字符串解析
+      const listPaddingBottom = iconOverflowPx
+
+      const fixed =
+        (n - 1) * spacing + n * (belowExtra + itemChrome) + listPaddingBottom
+
+      // 如果还没拿到真实高度（avail≈0），不要硬夹到最小，先用理想高度显示，
+      // 等 allocation 稳定后 notify::allocation 会触发 _updateWorkspacesGeometry 重新计算。
+      if (!avail || avail < MIN_PREVIEW_HEIGHT * n) {
+        return Math.max(MIN_PREVIEW_HEIGHT, ideal)
+      }
+
+      // 只有当“理想高度排布后真的放不下”时才缩小
+      // 注意：需要包含 listPaddingBottom，因为它会影响列表的实际占用高度
+      const needTotal =
+        n * (ideal + belowExtra + itemChrome) +
+        (n - 1) * spacing +
+        listPaddingBottom
+      if (needTotal <= avail) {
+        return Math.max(MIN_PREVIEW_HEIGHT, ideal)
+      }
+
+      let per = Math.floor((avail - fixed) / n)
+      if (!Number.isFinite(per)) per = ideal
+
+      // 缩小时允许缩到很小以保证塞得下（用户要求）
+      return Math.max(MIN_PREVIEW_HEIGHT, Math.min(ideal, per))
+    }
+
+    _getShortcutAppIds() {
+      let ids = []
+      try {
+        ids = SETTINGS.get_strv('workspace-preview-shortcut-apps') || []
+      } catch (e) {
+        ids = []
+      }
+
+      // 固定 5 个槽位：用空字符串占位
+      if (ids.length < SHORTCUT_SLOTS) {
+        ids = ids.concat(Array(Math.max(0, SHORTCUT_SLOTS - ids.length)).fill(''))
+      } else if (ids.length > SHORTCUT_SLOTS) {
+        ids = ids.slice(0, SHORTCUT_SLOTS)
+      }
+
+      // 首次为空时：从“系统收藏”取前 5 个作为默认（之后与系统收藏脱钩）
+      const allEmpty = ids.every((x) => !x)
+      if (allEmpty) {
+        try {
+          const favs = AppFavorites.getAppFavorites()
+          const favApps = favs.getFavorites?.() ?? []
+          const fromFavs = []
+          for (let a of favApps) {
+            let id = a?.get_id?.()
+            if (id) fromFavs.push(id)
+            if (fromFavs.length >= SHORTCUT_SLOTS) break
+          }
+          if (fromFavs.length) {
+            ids = fromFavs.concat(
+              Array(Math.max(0, SHORTCUT_SLOTS - fromFavs.length)).fill(''),
+            )
+            SETTINGS.set_strv('workspace-preview-shortcut-apps', ids)
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      return ids
+    }
+
+    _setShortcutAt(index, appId) {
+      let ids = this._getShortcutAppIds()
+      if (index < 0 || index >= SHORTCUT_SLOTS) return
+      ids[index] = appId || ''
+      try {
+        SETTINGS.set_strv('workspace-preview-shortcut-apps', ids)
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    _removeShortcutAt(index) {
+      this._setShortcutAt(index, '')
+    }
+
+    _ensureShortcutsBar() {
+      if (this._shortcutsBar) return
+      this._shortcutsBar = new St.Widget({
+        layout_manager: new Clutter.BoxLayout({
+          orientation: Clutter.Orientation.HORIZONTAL,
+          spacing: 6,
+        }),
+        reactive: true,
+        style_class: 'workspace-preview-shortcuts-bar',
+      })
+      // 根容器第二个 child：固定在底部（BoxLayout 会把 _wsList 拉伸到剩余空间）
+      this.add_child(this._shortcutsBar)
+      this._updateShortcutsBar()
+    }
+
+    _addWorkspaceItemBeforeShortcuts(item) {
+      // workspace items 只添加到列表容器中，底部快捷栏不参与排序
+      try {
+        this._wsList?.add_child?.(item)
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    _buildShortcutMenu(slotIndex, anchorActor, stageX, stageY) {
+      const menu = new PopupMenu.PopupMenu(
+        anchorActor,
+        0.5,
+        this.panel.geom.position,
+      )
+      menu.blockSourceEvents = true
+      Main.uiGroup.add_child(menu.actor)
+      this._iconMenuManager.addMenu(menu)
+
+      const ids = this._getShortcutAppIds()
+      const currentId = ids?.[slotIndex] || ''
+
+      if (currentId) {
+        menu.addAction(_('Remove'), () => this._removeShortcutAt(slotIndex))
+        menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem())
+      }
+
+      // 用“系统收藏”作为候选（轻量、直观）
+      let favApps = []
+      try {
+        favApps = AppFavorites.getAppFavorites().getFavorites?.() ?? []
+      } catch (e) {
+        favApps = []
+      }
+
+      if (!favApps.length) {
+        menu.addAction(_('No favorites'), () => {})
+      } else {
+        for (let app of favApps) {
+          const id = app?.get_id?.()
+          const name = app?.get_name?.() ?? id ?? ''
+          if (!id) continue
+          const item = new PopupMenu.PopupMenuItem(name)
+          try {
+            const icon = app.create_icon_texture?.(16) ?? null
+            if (icon) item.insert_child_at_index(icon, 0)
+          } catch (e) {
+            // ignore
+          }
+          item.connect('activate', () => this._setShortcutAt(slotIndex, id))
+          menu.addMenuItem(item)
+        }
+      }
+
+      // 菜单定位：跟随鼠标，避免预览区溢出层/transform 造成偏移
+      try {
+        Main.layoutManager.setDummyCursorGeometry(stageX, stageY, 0, 0)
+        menu.sourceActor = Main.layoutManager.dummyCursor
+      } catch (e) {
+        // ignore
+      }
+
+      menu.open(BoxPointer.PopupAnimation.FULL)
+      this._iconMenuManager.ignoreRelease()
+      return menu
+    }
+
+    _createShortcutButton(slotIndex, appId, iconSize) {
+      const isEmpty = !appId
+      let child = null
+      let targetApp = null
+
+      if (!isEmpty) {
+        try {
+          targetApp = Shell.AppSystem.get_default().lookup_app(appId)
+        } catch (e) {
+          targetApp = null
+        }
+      }
+
+      if (!isEmpty && targetApp) {
+        try {
+          child = new St.Icon({
+            gicon: targetApp.get_icon(),
+            icon_size: iconSize,
+            style_class: 'workspace-preview-shortcut-icon',
+          })
+        } catch (e) {
+          child = null
+        }
+      }
+
+      if (!child) {
+        child = new St.Icon({
+          icon_name: 'list-add-symbolic',
+          icon_size: Math.max(16, Math.round(iconSize * 0.8)),
+          style_class: 'workspace-preview-shortcut-icon-placeholder',
+        })
+      }
+
+      const btn = new St.Button({
+        reactive: true,
+        track_hover: true,
+        can_focus: false,
+        style_class: 'workspace-preview-shortcut-button',
+      })
+      btn.set_size(iconSize + 6, iconSize + 6)
+      btn.set_child(child)
+
+      btn.connect('button-press-event', (_a, event) => {
+        let b = 1
+        try {
+          b = event.get_button()
+        } catch (e) {
+          b = 1
+        }
+
+        if (b === 1) {
+          if (targetApp) {
+            try {
+              targetApp.activate()
+            } catch (e) {
+              // ignore
+            }
+          } else {
+            try {
+              const [sx, sy] = event.get_coords()
+              this._buildShortcutMenu(slotIndex, btn, sx, sy)
+            } catch (e) {
+              // ignore
+            }
+          }
+          return Clutter.EVENT_STOP
+        }
+
+        if (b === 3) {
+          try {
+            const [sx, sy] = event.get_coords()
+            this._buildShortcutMenu(slotIndex, btn, sx, sy)
+          } catch (e) {
+            // ignore
+          }
+          return Clutter.EVENT_STOP
+        }
+
+        return Clutter.EVENT_PROPAGATE
+      })
+
+      return btn
+    }
+
+    _updateShortcutsBar() {
+      if (!this._shortcutsBar) return
+
+      const iconSize = this._getPreviewAppIconSize()
+      const ids = this._getShortcutAppIds()
+
+      // 预留一行高度（图标 + 少量 padding）
+      try {
+        this._shortcutsBar.set_height(iconSize + 10)
+      } catch (e) {
+        // ignore
+      }
+
+      // 重建 5 个按钮（固定数量，直接重建简单可靠）
+      try {
+        for (let c of this._shortcutsBar.get_children?.() ?? []) c.destroy?.()
+      } catch (e) {
+        // ignore
+      }
+      this._shortcutsButtons = []
+
+      for (let i = 0; i < SHORTCUT_SLOTS; i++) {
+        const btn = this._createShortcutButton(i, ids[i], iconSize)
+        this._shortcutsButtons.push(btn)
+        this._shortcutsBar.add_child(btn)
+      }
+
+      // 快捷栏高度变化会影响 workspace 可用高度，需重算 previewHeight
+      this._timeoutsHandler.add([
+        'ws-preview-shortcuts-reflow',
+        0,
+        () => this._updateWorkspacesGeometry(),
+      ])
     }
 
     _updateVisibility() {
@@ -206,11 +732,11 @@ export const WorkspacePreviewView = GObject.registerClass(
           workspaceManager,
           'workspace-added',
           () => {
-            // 频繁增删 workspace 时合并为一次重建
+            // 频繁增删 workspace 时合并为一次同步（优先增量，必要时回退重建）
             this._timeoutsHandler.add([
               'ws-preview-rebuild',
               100,
-              () => this._updateWorkspaces(),
+              () => this._syncWorkspaceItems(),
             ])
           },
         ],
@@ -221,7 +747,7 @@ export const WorkspacePreviewView = GObject.registerClass(
             this._timeoutsHandler.add([
               'ws-preview-rebuild',
               100,
-              () => this._updateWorkspaces(),
+              () => this._syncWorkspaceItems(),
             ])
           },
         ],
@@ -284,6 +810,167 @@ export const WorkspacePreviewView = GObject.registerClass(
           },
         ],
       )
+
+      // workspace 名称变化时，只更新 label 文本，不重建
+      if (this._wmPrefs) {
+        this._signalsHandler.add([
+          this._wmPrefs,
+          'changed::workspace-names',
+          () => this._updateWorkspaceNameLabels(),
+        ])
+      }
+    }
+
+    _syncWorkspaceItems() {
+      // 尽量增量同步 workspace 数量变化：只增/删末尾，并更新索引/标签/激活态
+      if (!this.panel) return
+
+      let wm = null
+      try {
+        wm = Utils.DisplayWrapper.getWorkspaceManager()
+      } catch (e) {
+        wm = null
+      }
+      if (!wm) return
+
+      const desired = wm.n_workspaces ?? 0
+      const current = this._workspaceItems?.length ?? 0
+
+      // 变动太大或异常场景：直接重建（更稳）
+      if (desired < 0 || desired > 64) {
+        this._updateWorkspaces()
+        return
+      }
+
+      // 在任何同步前，先保证列表 spacing 与当前设置一致
+      this._updateListSpacingForIconSize()
+      this._ensureShortcutsBar()
+
+      // 关键：动态工作区可能会“重排/压缩”（workspace 对象与 index 不再对应）。
+      // 我们的增量同步只支持末尾增删；一旦检测到重排，直接回退全量重建，避免预览绑定到错误 workspace。
+      if (!this._ensureWorkspaceBindings(wm)) return
+
+      // 删除多余（从末尾删）
+      if (current > desired) {
+        for (let i = current - 1; i >= desired; i--) {
+          const actor = this._workspaceItems.pop()
+          if (!actor) continue
+          try {
+            // 先从父容器移除，再 destroy，避免 children 与 _workspaceItems 不一致
+            const p = actor.get_parent?.()
+            if (p) p.remove_child?.(actor)
+          } catch (e) {
+            // ignore
+          }
+          try {
+            actor.destroy?.()
+          } catch (e) {
+            // ignore
+          }
+        }
+        // workspace 索引变化后，稳定排序缓存可能错位：清空
+        this._workspaceAppOrder?.clear?.()
+        this._workspaceAppOrderNext?.clear?.()
+      }
+
+      // 新增（追加到末尾）
+      if (current < desired) {
+        let previewWidth = SETTINGS.get_int('workspace-preview-width')
+        let namePosition = SETTINGS.get_string('workspace-preview-name-position')
+
+        // previewHeight 复用计算逻辑
+        let previewHeight = this._computePreviewHeight(
+          previewWidth,
+          desired,
+          namePosition,
+        )
+
+        let activeWs = wm.get_active_workspace?.()
+        for (let i = current; i < desired; i++) {
+          let ws = wm.get_workspace_by_index(i)
+          if (!ws) {
+            // 回退：结构不符合预期
+            this._updateWorkspaces()
+            return
+          }
+          let isActive = ws === activeWs
+          let item = this._createWorkspaceItem(
+            ws,
+            i,
+            isActive,
+            previewWidth,
+            previewHeight,
+            namePosition,
+          )
+          this._addWorkspaceItemBeforeShortcuts(item)
+          this._workspaceItems.push(item)
+        }
+      }
+
+      // 同步一次状态（索引/激活态/名称）
+      for (let i = 0; i < this._workspaceItems.length; i++) {
+        let item = this._workspaceItems[i]
+        if (!item) continue
+        item._dtwIndex = i
+      }
+      this._updateVisibility()
+      this._updateActiveState()
+      this._updateWorkspaceNameLabels()
+      // 同步后确保快捷栏仍在最底部
+      this._ensureShortcutsBar()
+      this._updateShortcutsBar()
+      this._lastWorkAreaKey = this._getWorkAreaKey()
+
+      // 关键：同步后跑一次几何更新，确保新加的 workspace 预览缩放/位置正确
+      this._updateWorkspacesGeometry()
+
+      // 重要：增删 workspace 后，allocation 往往会在下一帧才稳定。
+      // 再补一次 idle 重算，确保“超出才缩小”的判断拿到真实高度。
+      GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+        try {
+          this._updateWorkspacesGeometry()
+        } catch (e) {
+          // ignore
+        }
+        return GLib.SOURCE_REMOVE
+      })
+    }
+
+    _getWorkspaceDisplayText(index) {
+      let displayText = `${index + 1}`
+      try {
+        let names = this._wmPrefs?.get_strv?.('workspace-names')
+        if (names && names.length > index && names[index]) {
+          displayText = `${index + 1}. ${names[index]}`
+        }
+      } catch (e) {
+        // ignore
+      }
+      return displayText
+    }
+
+    _updateWorkspaceNameLabels() {
+      // 只更新 label 文本与激活态颜色（避免重建造成闪动）
+      let activeIndex = 0
+      try {
+        activeIndex = Utils.DisplayWrapper.getWorkspaceManager().get_active_workspace_index()
+      } catch (e) {
+        activeIndex = 0
+      }
+
+      for (let item of this._workspaceItems || []) {
+        if (!item) continue
+        let idx = item._dtwIndex ?? 0
+        let text = this._getWorkspaceDisplayText(idx)
+        if (item._dtwNameLabel) {
+          try {
+            item._dtwNameLabel.text = text
+          } catch (e) {
+            // ignore
+          }
+          this._applyNameLabelActiveStyle(item._dtwNameLabel, idx === activeIndex)
+        }
+      }
     }
 
     _getWorkAreaKey() {
@@ -296,28 +983,101 @@ export const WorkspacePreviewView = GObject.registerClass(
       }
     }
 
+    _ensureWorkspaceBindings(workspaceManager = null) {
+      // 安全网：检测到 workspace 重排/错位时，立刻回退全量重建，避免“预览失效”
+      if (this._dtwRebuildInProgress) return false
+      if (!this.panel) return true
+
+      let wm = workspaceManager
+      if (!wm) {
+        try {
+          wm = Utils.DisplayWrapper.getWorkspaceManager()
+        } catch (e) {
+          wm = null
+        }
+      }
+      if (!wm) return true
+
+      try {
+        const desired = wm.n_workspaces ?? 0
+        const current = this._workspaceItems?.length ?? 0
+        const n = Math.min(current, desired)
+        for (let i = 0; i < n; i++) {
+          const ws = wm.get_workspace_by_index(i)
+          const item = this._workspaceItems[i]
+          if (!ws || !item) {
+            this._updateWorkspaces()
+            return false
+          }
+          if (item._dtwWorkspace && item._dtwWorkspace !== ws) {
+            this._updateWorkspaces()
+            return false
+          }
+        }
+      } catch (e) {
+        this._updateWorkspaces()
+        return false
+      }
+
+      return true
+    }
+
 
     _updateWorkspacesGeometry() {
       // 仅更新缩略图/背景的 scale 和 position，避免重建导致卡顿
       if (!this.panel || !this._workspaceItems.length) return
+      if (!this._ensureWorkspaceBindings()) return
 
       let previewWidth = SETTINGS.get_int('workspace-preview-width')
-      let previewHeight = PREVIEW_HEIGHT
       let wa = null
       try {
         wa = Main.layoutManager.getWorkAreaForMonitor(this.panel.monitor.index)
-        if (wa && wa.width > 0 && wa.height > 0) {
-          previewHeight = Math.max(80, Math.round((previewWidth * wa.height) / wa.width))
-        }
       } catch (e) {
         wa = null
       }
+      let namePosition = 'BOTTOM_RIGHT'
+      try {
+        namePosition = SETTINGS.get_string('workspace-preview-name-position')
+      } catch (e) {
+        namePosition = 'BOTTOM_RIGHT'
+      }
+      let previewHeight = this._computePreviewHeight(
+        previewWidth,
+        this._workspaceItems.length,
+        namePosition,
+      )
+
+      // 几何 key：用于避免重复 set_scale/set_position
+      const geomKey = wa
+        ? `${previewWidth}x${previewHeight}__${wa.x},${wa.y},${wa.width},${wa.height}`
+        : `${previewWidth}x${previewHeight}__no-wa`
 
       for (let item of this._workspaceItems) {
         if (!item?._dtwPreviewArea || !item?._dtwPreviewStack) continue
+        // 尺寸不变则不要 set_size（减少 relayout）
+        try {
+          if (item._dtwPreviewStack.width !== previewWidth || item._dtwPreviewStack.height !== previewHeight)
+            item._dtwPreviewStack.set_size(previewWidth, previewHeight)
+        } catch (e) {
+          item._dtwPreviewStack.set_size(previewWidth, previewHeight)
+        }
+        try {
+          if (item._dtwPreviewArea.width !== previewWidth || item._dtwPreviewArea.height !== previewHeight)
+            item._dtwPreviewArea.set_size(previewWidth, previewHeight)
+        } catch (e) {
+          item._dtwPreviewArea.set_size(previewWidth, previewHeight)
+        }
 
-        item._dtwPreviewStack.set_size(previewWidth, previewHeight)
-        item._dtwPreviewArea.set_size(previewWidth, previewHeight)
+        if (item._dtwLastGeomKey === geomKey) {
+          // 叠加层仍需在尺寸变化时重算位置；这里让 updateLabelPos 自己去重
+          try {
+            item._dtwUpdateLabelPos?.(previewWidth, previewHeight)
+          } catch (e) {
+            // ignore
+          }
+          continue
+        }
+        item._dtwLastGeomKey = geomKey
 
         if (wa && wa.width > 0 && wa.height > 0) {
           let scale = Math.max(previewWidth / wa.width, previewHeight / wa.height)
@@ -342,7 +1102,7 @@ export const WorkspacePreviewView = GObject.registerClass(
 
         // 叠加层重算位置
         try {
-          item._dtwUpdateLabelPos?.()
+          item._dtwUpdateLabelPos?.(previewWidth, previewHeight)
         } catch (e) {
           // ignore
         }
@@ -375,7 +1135,21 @@ export const WorkspacePreviewView = GObject.registerClass(
           }
           // 切换 intellihide 状态
           let currentState = SETTINGS.get_boolean('intellihide')
-          SETTINGS.set_boolean('intellihide', !currentState)
+          let nextState = !currentState
+          SETTINGS.set_boolean('intellihide', nextState)
+          // 需求：开启自动隐藏时立即隐藏（不要等 enable-start-delay / close-delay）
+          if (nextState) {
+            // changed::intellihide 会同步触发 panel.intellihide.enable()；
+            // 用 idle 确保 enable() 先完成，再执行“立即隐藏”
+            GLib.idle_add(GLib.PRIORITY_DEFAULT, () => {
+              try {
+                this.panel?.intellihide?.hideImmediatelyAfterToggle?.()
+              } catch (e) {
+                // ignore
+              }
+              return GLib.SOURCE_REMOVE
+            })
+          }
           return Clutter.EVENT_STOP
         }
       } catch (e) {
@@ -424,8 +1198,9 @@ export const WorkspacePreviewView = GObject.registerClass(
       return app
     }
 
-    _getUniqueAppsFromWindows(windows) {
-      // 按“最近使用”排序（用窗口 user_time 的最大值）
+    _getUniqueAppsFromWindows(windows, workspaceIndex = null) {
+      // 去重后返回 app 列表。
+      // 重要：这里不要用“最近使用(user_time)”排序，否则点击激活会改变 user_time，导致图标顺序互换。
       let map = new Map() // id -> { app, t }
       for (let w of windows) {
         let app = this._getWindowApp(w)
@@ -450,9 +1225,54 @@ export const WorkspacePreviewView = GObject.registerClass(
         if (!prev || t > prev.t) map.set(id, { app, t })
       }
 
-      return Array.from(map.values())
-        .sort((a, b) => (b.t ?? 0) - (a.t ?? 0))
-        .map((x) => x.app)
+      // 允许通过设置切换：稳定顺序 vs 最近使用排序
+      let keepStable = true
+      try {
+        keepStable = SETTINGS.get_boolean('workspace-preview-app-icons-stable-order')
+      } catch (e) {
+        keepStable = true
+      }
+      if (!keepStable) {
+        return Array.from(map.values())
+          .sort((a, b) => (b.t ?? 0) - (a.t ?? 0))
+          .map((x) => x.app)
+      }
+
+      // 稳定顺序：按“首次出现”固定排序（每个 workspace 独立）
+      if (workspaceIndex !== null && workspaceIndex !== undefined) {
+        let orderMap = this._workspaceAppOrder.get(workspaceIndex)
+        if (!orderMap) {
+          orderMap = new Map()
+          this._workspaceAppOrder.set(workspaceIndex, orderMap)
+        }
+
+        let next = this._workspaceAppOrderNext.get(workspaceIndex) ?? 1
+
+        // 新出现的 app 追加到末尾
+        for (let id of map.keys()) {
+          if (!orderMap.has(id)) {
+            orderMap.set(id, next++)
+          }
+        }
+
+        // 清理不再存在的 app，避免 orderMap 无限增长
+        for (let id of Array.from(orderMap.keys())) {
+          if (!map.has(id)) orderMap.delete(id)
+        }
+
+        this._workspaceAppOrderNext.set(workspaceIndex, next)
+
+        return Array.from(map.entries())
+          .sort((a, b) => {
+            const ao = orderMap.get(a[0]) ?? 0
+            const bo = orderMap.get(b[0]) ?? 0
+            return ao - bo
+          })
+          .map(([, v]) => v.app)
+      }
+
+      // fallback：若没有 workspaceIndex，就保持插入顺序（Map 的 key 顺序）
+      return Array.from(map.values()).map((x) => x.app)
     }
 
     _getWindowsForAppInWorkspace(app, workspace, tracker) {
@@ -523,54 +1343,17 @@ export const WorkspacePreviewView = GObject.registerClass(
 
       menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem())
 
-      // Quit (this workspace)
-      let quitHere = menu.addAction(_('Quit (This Workspace)'), () => {
-        let wsWindows = this._getWindowsForAppInWorkspace(app, workspace, tracker)
-        for (let w of wsWindows) {
-          try {
-            w.delete(global.get_current_time())
-          } catch (e) {
-            // ignore
-          }
-        }
-      })
-
       // Quit (all)
       let quitAll = menu.addAction(_('Quit'), () => {
         AppIcons.closeAllWindows(app, this.panel.monitor)
       })
 
-      menu.addMenuItem(new PopupMenu.PopupSeparatorMenuItem())
-
-      // Pin/Unpin favorite (best effort)
-      let favs = AppFavorites.getAppFavorites()
-      let appId = null
-      try {
-        appId = app.get_id()
-      } catch (e) {
-        appId = null
-      }
-      let isFav = false
-      try {
-        isFav = !!(appId && favs.isFavorite(appId))
-      } catch (e) {
-        isFav = false
-      }
-      let pinItem = menu.addAction(isFav ? _('Unpin') : _('Pin'), () => {
+      // 关闭后把 sourceActor 恢复到图标本身（我们右键时会临时改为 dummyCursor 以便定位到鼠标）
+      menu.connect('open-state-changed', (_m, isOpen) => {
+        if (isOpen) return
         try {
-          if (!appId) return
-          if (favs.isFavorite(appId)) {
-            favs.removeFavorite(appId)
-          } else {
-            let pos = 0
-            try {
-              pos = favs.getFavorites().length
-            } catch (e) {
-              pos = 0
-            }
-            favs.addFavoriteAtPos(appId, pos)
-          }
-          favs.emit('changed')
+          menu.sourceActor = iconButton
+          iconButton.sync_hover?.()
         } catch (e) {
           // ignore
         }
@@ -582,8 +1365,6 @@ export const WorkspacePreviewView = GObject.registerClass(
 
       iconButton._dtwMenu = menu
       iconButton._dtwQuitAllItem = quitAll
-      iconButton._dtwQuitHereItem = quitHere
-      iconButton._dtwPinItem = pinItem
     }
 
     _createPreviewAppIconButton({ app, workspace, iconSize, tracker }) {
@@ -626,9 +1407,17 @@ export const WorkspacePreviewView = GObject.registerClass(
         if (btn === 3) {
           this._ensureAppIconMenu(iconButton, app, workspace, tracker)
           let countAll = AppIcons.getInterestingWindows(app, this.panel.monitor).length
-          let countHere = this._getWindowsForAppInWorkspace(app, workspace, tracker).length
           iconButton._dtwQuitAllItem.setSensitive(countAll > 0)
-          iconButton._dtwQuitHereItem.setSensitive(countHere > 0)
+          // 需求：菜单位置要正确（跟随鼠标/图标都行，但不能“跑偏”）。
+          // 用 dummyCursor 作为临时 sourceActor，可以让菜单稳定出现在鼠标位置附近，
+          // 不受图标所在容器（预览区/溢出层）的 transform/clip 影响。
+          try {
+            let [sx, sy] = event.get_coords()
+            Main.layoutManager.setDummyCursorGeometry(sx, sy, 0, 0)
+            iconButton._dtwMenu.sourceActor = Main.layoutManager.dummyCursor
+          } catch (e) {
+            // ignore
+          }
           iconButton._dtwMenu.open(BoxPointer.PopupAnimation.FULL)
           this._iconMenuManager.ignoreRelease()
           return Clutter.EVENT_STOP
@@ -752,7 +1541,7 @@ export const WorkspacePreviewView = GObject.registerClass(
       }
 
       this._iconDrag.stageSignalId = global.stage.connect('captured-event', (_actor, event) => {
-        if (!this._iconDrag) return Clutter.EVENT_PROPAGATE
+        if (this._dtwDestroyed || !this._iconDrag || !this.panel) return Clutter.EVENT_PROPAGATE
 
         let t = null
         try {
@@ -883,48 +1672,75 @@ export const WorkspacePreviewView = GObject.registerClass(
     }
 
     _updateFocusedIcons() {
-      // 更新所有图标的 focused 状态（不重建列表）
-      for (let item of this._workspaceItems) {
-        if (!item?._dtwOverlayLayer) continue
+      // 优化：只更新“上一个 focused + 当前 focused”，避免遍历所有图标
+      if (!this._ensureWorkspaceBindings()) return
+      let fw = null
+      try {
+        fw = global.display.focus_window
+      } catch (e) {
+        fw = null
+      }
+
+      let next = null
+      if (fw) {
         try {
-          let iconsBox = item._dtwOverlayLayer.get_children()?.[0]?.get_children()?.[0]
-          if (!iconsBox) continue
-          for (let child of iconsBox.get_children() || []) {
-            if (child._dtwApp) {
-              // 是图标按钮
-              this._updateIconFocusedState(child)
-            }
+          const ws = fw.get_workspace?.()
+          const wsIndex = ws?.index?.()
+          const app = this._getWindowApp(fw)
+          const appId = app?.get_id?.() ?? app?.get_name?.() ?? null
+          if (wsIndex !== null && wsIndex !== undefined && appId) {
+            next = { wsIndex, appId }
           }
         } catch (e) {
-          // ignore
+          next = null
         }
       }
+
+      const prev = this._lastFocusedIcon
+      if (
+        prev &&
+        next &&
+        prev.wsIndex === next.wsIndex &&
+        prev.appId === next.appId
+      ) {
+        return
+      }
+
+      const updateOne = (key) => {
+        if (!key) return
+        const item = this._workspaceItems?.[key.wsIndex]
+        const map = item?._dtwAppIconButtons
+        const btn = map?.get?.(key.appId)
+        if (btn) this._updateIconFocusedState(btn)
+      }
+
+      // 先更新旧的（去掉高亮），再更新新的（加上高亮）
+      updateOne(prev)
+      updateOne(next)
+      this._lastFocusedIcon = next
     }
 
     _updateWorkspaces() {
+      if (this._dtwRebuildInProgress) return
+      this._dtwRebuildInProgress = true
       this._cancelIconDrag()
+      // 确保快捷栏存在（并且在重建后仍保留在底部）
+      this._ensureShortcutsBar()
       // 清除旧的预览项
       this._workspaceItems.forEach((item) => {
         if (item) item.destroy()
       })
       this._workspaceItems = []
 
-      // 清除所有子元素
-      let children = this.get_children()
-      children.forEach((child) => this.remove_child(child))
-
-      // 更新布局间距
-      let layout = this.get_layout_manager()
-      if (layout) {
-        // 当图标层向下溢出时，额外增加条目间距，避免相互遮挡
-        let base = SETTINGS.get_int('workspace-preview-spacing')
-        let namePosition = SETTINGS.get_string('workspace-preview-name-position')
-        let extra =
-          namePosition == 'BOTTOM_RIGHT' || namePosition == 'BOTTOM_LEFT'
-            ? Math.floor(APP_ICON_SIZE / 2)
-            : 0
-        layout.set_spacing(base + extra)
+      // 清除所有 workspace items（只在 _wsList 内）
+      try {
+        for (let c of this._wsList?.get_children?.() ?? []) this._wsList.remove_child(c)
+      } catch (e) {
+        // ignore
       }
+
+      // 更新布局间距（随图标尺寸动态调整）
+      this._updateListSpacingForIconSize()
 
       let workspaceManager = Utils.DisplayWrapper.getWorkspaceManager()
       let workspaceCount = workspaceManager.n_workspaces
@@ -938,16 +1754,12 @@ export const WorkspacePreviewView = GObject.registerClass(
         this.panel?.geom?.position == St.Side.LEFT ||
         this.panel?.geom?.position == St.Side.RIGHT
 
-      // 预览高度：固定（根据宽度按工作区画面比例计算），不再按 workspace 数量“充满”整个区域
-      let previewHeight = PREVIEW_HEIGHT
-      try {
-        let wa = Main.layoutManager.getWorkAreaForMonitor(this.panel.monitor.index)
-        if (wa && wa.width > 0 && wa.height > 0) {
-          previewHeight = Math.max(80, Math.round((previewWidth * wa.height) / wa.width))
-        }
-      } catch (e) {
-        previewHeight = PREVIEW_HEIGHT
-      }
+      // 预览高度：优先按 workarea 比例；当 workspace 数量太多时缩小以塞进可用高度（不含快捷栏）
+      let previewHeight = this._computePreviewHeight(
+        previewWidth,
+        workspaceCount,
+        namePosition,
+      )
 
       // 为每个工作区创建预览项（使用 GNOME Shell 原生 WorkspaceThumbnail）
       for (let i = 0; i < workspaceCount; i++) {
@@ -962,19 +1774,36 @@ export const WorkspacePreviewView = GObject.registerClass(
           previewHeight,
           namePosition,
         )
-        this.add_child(item)
+        this._addWorkspaceItemBeforeShortcuts(item)
         this._workspaceItems.push(item)
       }
 
+      this._updateShortcutsBar()
+
       // 更新布局/可见性
-      this._updateLayout()
       this._updateVisibility()
 
       // 重建后同步一次激活态（防止时序导致状态不一致）
       this._updateActiveState()
+      // 同步一次名称（避免启动阶段 workspace-names 尚未 ready）
+      this._updateWorkspaceNameLabels()
 
       // 记录当前 workarea key（用于去抖）
       this._lastWorkAreaKey = this._getWorkAreaKey()
+
+      // 重建后清空 focused 追踪，避免 wsIndex 指向旧列表
+      this._lastFocusedIcon = null
+      this._dtwRebuildInProgress = false
+
+      // 重建后下一帧再补一次几何更新：确保 allocation 完全稳定后再计算缩放
+      GLib.idle_add(GLib.PRIORITY_DEFAULT_IDLE, () => {
+        try {
+          this._updateWorkspacesGeometry()
+        } catch (e) {
+          // ignore
+        }
+        return GLib.SOURCE_REMOVE
+      })
     }
 
     _createWorkspaceItem(
@@ -996,6 +1825,7 @@ export const WorkspacePreviewView = GObject.registerClass(
         track_hover: true,
       })
       container._dtwIndex = index
+      container._dtwWorkspace = workspace
       container._dtwNameLabel = null
       container._dtwUpdateAppIcons = null  // 存储图标更新函数
       container._dtwPreviewArea = null
@@ -1130,16 +1960,7 @@ export const WorkspacePreviewView = GObject.registerClass(
       container.add_child(previewStack)
 
       // 构建显示文本：序号 + 名称（若有）
-      let displayText = `${index + 1}`
-      try {
-        let prefs = new Gio.Settings({ schema_id: WM_PREFS_SCHEMA })
-        let names = prefs.get_strv('workspace-names')
-        if (names && names.length > index && names[index]) {
-          displayText = `${index + 1}. ${names[index]}`
-        }
-      } catch (e) {
-        // ignore
-      }
+      let displayText = this._getWorkspaceDisplayText(index)
 
       container._dtwOverlayLayer = null
       container._dtwNameOverlayLayer = null
@@ -1175,11 +1996,15 @@ export const WorkspacePreviewView = GObject.registerClass(
           can_focus: false,
         })
         badge.add_child(iconsBox)
+        container._dtwIconsBox = iconsBox
+        // badge 计算缓存：避免频繁 get_children / 重算
+        container._dtwBadgeIconCount = 0
+        container._dtwLastBadgeIconSize = 0
 
         overlayLayer.add_child(badge)
         
         // 记录图标尺寸，用于固定计算（避免图标加入后 preferred_size 变化导致布局错乱）
-        let badgeIconSize = APP_ICON_SIZE
+        let badgeIconSize = DEFAULT_APP_ICON_SIZE
 
         // 顶部序号层：单独叠加一层，仅显示序号/名称
         let nameOverlayLayer = new St.Widget({
@@ -1206,29 +2031,71 @@ export const WorkspacePreviewView = GObject.registerClass(
 
         // 根据 previewArea 实际分配尺寸，把图标与序号分别定位
         let margin = 10
-        let updateLabelPos = () => {
-          // 确保叠加层始终在最顶层（防止 WorkspaceThumbnail 动态添加的窗口克隆遮挡）
-          previewStack.set_child_above_sibling(container._dtwOverlayLayer, null)
-          previewStack.set_child_above_sibling(container._dtwNameOverlayLayer, null)
+        let updateLabelPos = (forcedW = null, forcedH = null) => {
+          // 只在必要时把叠加层置顶（避免每次都做 set_child_above_sibling）
+          try {
+            const last = previewStack.get_last_child?.()
+            if (last !== container._dtwNameOverlayLayer) {
+              previewStack.set_child_above_sibling(container._dtwOverlayLayer, null)
+              previewStack.set_child_above_sibling(container._dtwNameOverlayLayer, null)
+            }
+          } catch (e) {
+            // fallback：保持原逻辑
+            try {
+              previewStack.set_child_above_sibling(container._dtwOverlayLayer, null)
+              previewStack.set_child_above_sibling(container._dtwNameOverlayLayer, null)
+            } catch (e2) {
+              // ignore
+            }
+          }
 
-          // 获取 previewArea 的实际分配尺寸（用于计算 badge 在内部的位置）
-          let box = previewArea.get_allocation_box()
-          let w = box.x2 - box.x1
-          let h = box.y2 - box.y1
+          // 尽量避免读取 allocation_box（它可能高频触发）；尺寸通常由 set_size 决定
+          let w = forcedW ?? previewArea.width ?? 0
+          let h = forcedH ?? previewArea.height ?? 0
+          if (!w || !h) {
+            try {
+              let box = previewArea.get_allocation_box()
+              w = box.x2 - box.x1
+              h = box.y2 - box.y1
+            } catch (e) {
+              // ignore
+            }
+          }
 
           // 同步 overlayLayer 的尺寸（确保它覆盖整个 previewArea 内部）
-          container._dtwOverlayLayer.set_size(w, h)
-          container._dtwNameOverlayLayer.set_size(w, h)
+          try {
+            if (
+              container._dtwOverlayLayer.width !== w ||
+              container._dtwOverlayLayer.height !== h
+            )
+              container._dtwOverlayLayer.set_size(w, h)
+          } catch (e) {
+            container._dtwOverlayLayer.set_size(w, h)
+          }
+          try {
+            if (
+              container._dtwNameOverlayLayer.width !== w ||
+              container._dtwNameOverlayLayer.height !== h
+            )
+              container._dtwNameOverlayLayer.set_size(w, h)
+          } catch (e) {
+            container._dtwNameOverlayLayer.set_size(w, h)
+          }
 
           // 计算 badge 的尺寸（用固定计算，避免图标加入后 preferred_size 变化）
           // 图标数量（最多 APP_ICON_MAX 个）
-          let iconCount = Math.min(iconsBox.get_children().length, APP_ICON_MAX)
+          let iconCount = Math.min(container._dtwBadgeIconCount ?? 0, APP_ICON_MAX)
           // 图标间距（从 CSS 读取或默认 4px）
           let iconSpacing = 4
           // badge 宽度 = 图标数量 × 图标尺寸 + (数量-1) × 间距
           let natW = iconCount * badgeIconSize + Math.max(0, iconCount - 1) * iconSpacing
           // badge 高度 = 图标尺寸
           let natH = badgeIconSize
+
+          // 若尺寸/数量都没变，跳过重算（但上面的“置顶”仍已执行）
+          const key = `${w}x${h}__${natW}x${natH}__${namePosition}`
+          if (container._dtwLastBadgePosKey === key) return
+          container._dtwLastBadgePosKey = key
 
           // 计算 badge 在 overlayLayer 内部的坐标（相对于 overlayLayer 的 0,0）
           // x: 左下角 = margin，右下角 = w - natW - margin
@@ -1255,12 +2122,12 @@ export const WorkspacePreviewView = GObject.registerClass(
           let windows = this._listWorkspaceWindows(workspace)
 
           // 图标大小固定，避免选中时变化
-          let iconSize = APP_ICON_SIZE
+          let iconSize = this._getPreviewAppIconSize()
           // 同步更新 badge 图标尺寸（用于固定计算）
           badgeIconSize = iconSize
 
           // 去重：同一应用只显示一次
-          let apps = this._getUniqueAppsFromWindows(windows)
+          let apps = this._getUniqueAppsFromWindows(windows, index)
 
           const total = apps.length
           const shown = apps.slice(0, APP_ICON_MAX)
@@ -1276,7 +2143,7 @@ export const WorkspacePreviewView = GObject.registerClass(
               }
             })
             .join('|')
-          const sig = `${ids}__${hidden.length}`
+          const sig = `${iconSize}__${ids}__${hidden.length}`
           if (container._dtwIconSig === sig) {
             updateLabelPos()
             return
@@ -1285,6 +2152,14 @@ export const WorkspacePreviewView = GObject.registerClass(
 
           // 现在才清空（避免无谓 destroy/recreate）
           iconsBox.get_children().forEach((c) => c.destroy())
+          // appId -> iconButton（用于 focused 状态增量更新）
+          container._dtwAppIconButtons = new Map()
+          // 缓存 badge 所需的 iconCount（包含 +N 按钮）
+          container._dtwBadgeIconCount = Math.min(
+            shown.length + (total > APP_ICON_MAX ? 1 : 0),
+            APP_ICON_MAX,
+          )
+          container._dtwLastBadgeIconSize = iconSize
 
           for (let app of shown) {
             let iconButton = this._createPreviewAppIconButton({
@@ -1293,7 +2168,15 @@ export const WorkspacePreviewView = GObject.registerClass(
               iconSize,
               tracker,
             })
-            if (iconButton) iconsBox.add_child(iconButton)
+            if (iconButton) {
+              iconsBox.add_child(iconButton)
+              try {
+                const id = app.get_id?.() ?? app.get_name?.() ?? String(app)
+                container._dtwAppIconButtons.set(id, iconButton)
+              } catch (e) {
+                // ignore
+              }
+            }
           }
 
           if (total > APP_ICON_MAX) {
@@ -1369,16 +2252,8 @@ export const WorkspacePreviewView = GObject.registerClass(
           // ignore
         }
 
-        // 初次定位 + 尺寸变化时重新定位
+        // 初次定位（后续由 _updateWorkspacesGeometry / updateAppIcons 触发定位）
         updateLabelPos()
-        let allocId = previewArea.connect('notify::allocation', updateLabelPos)
-        container.connect('destroy', () => {
-          try {
-            previewArea.disconnect(allocId)
-          } catch (e) {
-            // ignore
-          }
-        })
       } else if (namePosition == 'BELOW') {
         // 只在选择 BELOW 时，才单独占一行放在预览下方
         let nameLabel = new St.Label({
@@ -1468,19 +2343,23 @@ export const WorkspacePreviewView = GObject.registerClass(
     }
 
     destroy() {
+      this._dtwDestroyed = true
       this._cancelIconDrag()
       this._workspaceItems.forEach((item) => item.destroy())
       this._workspaceItems = []
 
-      // 断开扩展状态监听
-      if (this._extensionStateChangedId) {
-        try {
-          this._extensionManager?.disconnect(this._extensionStateChangedId)
-        } catch (e) {
-          // ignore
-        }
-        this._extensionStateChangedId = null
+      try {
+        this._shortcutsButtons?.forEach?.((b) => b?.destroy?.())
+      } catch (e) {
+        // ignore
       }
+      this._shortcutsButtons = []
+      try {
+        this._shortcutsBar?.destroy?.()
+      } catch (e) {
+        // ignore
+      }
+      this._shortcutsBar = null
 
       this._signalsHandler.destroy()
       this._timeoutsHandler.destroy()

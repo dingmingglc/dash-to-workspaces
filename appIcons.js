@@ -2136,6 +2136,14 @@ export const ShowAppsIconWrapper = class extends EventEmitter {
         track_hover: true,
       })
 
+      // 有些主题会通过 .overview-icon / .show-apps 等规则把图标限制得很小。
+      // 这里对 icon actor 直接设置 inline style，确保 icon-size 生效（优先于主题样式）。
+      try {
+        this._iconActor.set_style(`icon-size: ${size}px;`)
+      } catch (e) {
+        // ignore
+      }
+
       if (customIconPath) {
         this._iconActor.gicon = new Gio.FileIcon({
           file: Gio.File.new_for_path(customIconPath),
@@ -2196,7 +2204,8 @@ export const ShowAppsIconWrapper = class extends EventEmitter {
   }
 
   setShowAppsPadding() {
-    let padding = getIconPadding(this.realShowAppsIcon._dtpPanel)
+    // 让“九宫格”按钮更大：不再沿用通用 appicon-padding，避免把图标挤小
+    let padding = 0
     let sidePadding = SETTINGS.get_int('show-apps-icon-side-padding')
     let isVertical = this.realShowAppsIcon._dtpPanel.geom.vertical
 
