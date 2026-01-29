@@ -60,6 +60,35 @@ To create your own repository and push this extension:
 
 ---
 
+## 用户操作说明（简要）
+
+1. **启用扩展**  
+   安装后，在「扩展」应用里打开 **Dash to Workspaces**，或运行：  
+   `gnome-extensions enable dash-to-workspaces@dingmingglc`  
+   必要时注销/重新登录或按 Alt+F2 输入 `r` 重启 GNOME Shell。
+
+2. **面板与任务栏**  
+   - 应用图标和系统托盘会出现在主面板上（类似 Windows 任务栏）。  
+   - 在扩展设置里可改 **Position**：面板在屏幕顶部、底部、左侧或右侧，以及高度、不透明度等。
+
+3. **工作区预览**  
+   - 面板上会显示当前所有工作区的小预览；点击某个预览可切换工作区。  
+   - 可在预览上拖拽窗口图标，把窗口移到对应工作区；相关选项在设置的 **Behavior** 等中。
+
+4. **智能隐藏（可选）**  
+   - 默认**不隐藏**面板。若需自动隐藏，在扩展设置中打开 **Intellihide**，并可按需配置「用指针显示」「根据窗口隐藏」等。
+
+5. **打开设置**  
+   - 在「扩展」里点击本扩展旁的齿轮，或运行：  
+   `gnome-extensions prefs dash-to-workspaces@dingmingglc`
+
+6. **恢复默认**  
+   - 在终端执行：  
+   `dconf reset -f /org/gnome/shell/extensions/dash-to-workspaces/`  
+   然后重启 GNOME Shell。
+
+---
+
 ## Installation
 
 ### From source (manual)
@@ -96,7 +125,7 @@ Once the extension is published on [extensions.gnome.org](https://extensions.gno
 
 ## Requirements
 
-- GNOME Shell 46, 47, 48, or 49 (see `metadata.json` → `shell-version`).
+- GNOME Shell 48 或 49（以 `metadata.json` 中 `shell-version` 为准）。
 
 ---
 
@@ -111,6 +140,26 @@ Reset to defaults:
 ```bash
 dconf reset -f /org/gnome/shell/extensions/dash-to-workspaces/
 ```
+
+---
+
+## 发布前检查（Publishing checklist）
+
+发布到 GitHub 或 [extensions.gnome.org](https://extensions.gnome.org/) 前建议确认：
+
+| 项目 | 说明 |
+|------|------|
+| **metadata.json** | `name`、`description`、`uuid`、`url`、`shell-version`、`version` 正确；`uuid` 与扩展文件夹名一致（如 `dash-to-workspaces@dingmingglc`）。 |
+| **许可证** | [COPYING](COPYING) 存在且为 GPL-2.0-or-later；README 中注明 License。 |
+| **敏感信息** | 代码与配置中无 API Key、密码、Personal Access Token 等；`.cursor/` 规则里若提到 token 仅作说明，勿把真实 token 提交进仓库。 |
+| **.gitignore** | 建议忽略 `.git/`、`.cursor/` 等，避免把本地/IDE 配置推上去；若用 GitHub，可再忽略 `*.mo` 的本地编译产物（可选，因 .mo 通常需随仓库发布以便离线安装）。 |
+| **扩展网站 zip** | 上传到 extensions.gnome.org 时，zip 内为扩展**根目录下的所有文件**（如 `extension.js`、`metadata.json`、`schemas/`、`locale/` 等），不要多一层以 UUID 命名的父文件夹（按网站要求）。 |
+| **shell-version** | 与当前 GNOME 版本对应；仅写你测试过的版本（如 `["48","49"]`），避免承诺未测试版本。 |
+
+当前已知差异或注意点：
+
+- **README 与 metadata**：若你修改了 `metadata.json` 的 `shell-version`，请同步改 README 的 Requirements 小节。
+- **.gitignore**：若仓库根目录尚无 `.gitignore`，建议新建并加入 `.cursor/` 等，避免误提交。
 
 ---
 

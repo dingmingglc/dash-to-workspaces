@@ -1,0 +1,7 @@
+# Local / IDE
+.cursor/
+.git/
+
+# Optional: editor backups
+*~
+.DS_Store

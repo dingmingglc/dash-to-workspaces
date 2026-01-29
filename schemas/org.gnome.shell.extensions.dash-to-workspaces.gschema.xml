@@ -121,12 +121,12 @@
       <description>Set the size of the panel.</description>
     </key>
     <key type="b" name="desktop-line-use-custom-color">
-      <default>false</default>
+      <default>true</default>
       <summary>Override Show Desktop line color</summary>
       <description>Replace current Show Desktop button line color</description>
     </key>
     <key type="s" name="desktop-line-custom-color">
-      <default>"rgba(200,200,200,0.2)"</default>
+      <default>"rgb(192,97,203)"</default>
       <summary>Custom Show Desktop line color</summary>
       <description>Custom Show Desktop button line color</description>
     </key>
@@ -141,12 +141,12 @@
       <description>Style of Appicons</description>
     </key>
     <key name="dot-style-focused" enum="org.gnome.shell.extensions.dash-to-workspaces.dotStyle">
-      <default>'METRO'</default>
+      <default>'DOTS'</default>
       <summary>Style of the running indicator (focused)</summary>
       <description>Style of the running indicator for the icon for the currently focused application</description>
     </key>
     <key name="dot-style-unfocused" enum="org.gnome.shell.extensions.dash-to-workspaces.dotStyle">
-      <default>'METRO'</default>
+      <default>'DOTS'</default>
       <summary>Style of the running indicator (unfocused)</summary>
       <description>Style of the running indicator for the icon for applications which are not currently focused</description>
     </key>
@@ -282,7 +282,7 @@
       <description>Custom background color for the panel</description>
     </key>
     <key type="b" name="trans-use-custom-opacity">
-      <default>false</default>
+      <default>true</default>
       <summary>Custom background color</summary>
       <description>Replace current theme background color for the panel</description>
     </key>
@@ -292,7 +292,7 @@
       <description>Enable dynamic opacity</description>
     </key>
     <key type="d" name="trans-panel-opacity">
-      <default>0.4</default>
+      <default>0.5</default>
       <summary>Panel opacity</summary>
       <description>Custom opacity for the panel</description>
     </key>
@@ -390,7 +390,7 @@
       <summary>Limit to panel length</summary>
     </key>
     <key type="b" name="intellihide-revealed-hover">
-      <default>true</default>
+      <default>false</default>
       <summary>Panel stays revealed when hovered</summary>
     </key>
     <key type="b" name="intellihide-revealed-hover-limit-size">
@@ -398,12 +398,12 @@
       <summary>Limit to panel length</summary>
     </key>
     <key type="b" name="intellihide-use-pressure">
-      <default>false</default>
+      <default>true</default>
       <summary>Intellihide pressure</summary>
       <description>To reveal the panel, pressure needs to be applied to the edge of the screen</description>
     </key>
     <key type="i" name="intellihide-pressure-threshold">
-      <default>100</default>
+      <default>200</default>
       <summary>Intellihide pressure threshold</summary>
       <description>The pressure needed to reveal the panel</description>
     </key>
@@ -466,7 +466,7 @@
       <description>Customize the Show Applications icon</description>
     </key>
     <key type="i" name="show-apps-icon-side-padding">
-      <default>2</default>
+      <default>8</default>
       <summary>Show Applications icon side padding</summary>
       <description>Customize the Show Applications icon side padding</description>
     </key>
@@ -506,7 +506,7 @@
       <description>Show activities button on the left hand side of the taskbar</description>
     </key>
     <key type="i" name="showdesktop-button-width">
-      <default>8</default>
+      <default>20</default>
       <summary>Width of show Desktop button</summary>
       <description>Customize the width of the show Desktop button</description>
     </key>
@@ -526,12 +526,12 @@
       <description>Window fade animation time when showing the destop</description>
     </key>
     <key type="b" name="show-window-previews">
-      <default>true</default>
+      <default>false</default>
       <summary>Show window preview</summary>
       <description>Show preview of running window on hover of app icon</description>
     </key>
     <key type="b" name="show-tooltip">
-      <default>true</default>
+      <default>false</default>
       <summary>Show tooltip</summary>
       <description>Show tooltip on hover of app icon</description>
     </key>
@@ -541,7 +541,7 @@
       <description>Show or hide running application icons in the dash</description>
     </key>
     <key type="b" name="show-favorites">
-      <default>true</default>
+      <default>false</default>
       <summary>Show favorites apps</summary>
       <description>Show or hide favorite application icons in the dash</description>
     </key>
@@ -715,7 +715,7 @@
       <summary>Isolate monitors even with a single panel</summary>
     </key>
     <key type="b" name="show-favorites-all-monitors">
-      <default>true</default>
+      <default>false</default>
       <summary>Display the favorites on all monitors</summary>
       <description>Specifies if every panel should display the favorite applications. If false, the favorite appplications are only displayed on the primary monitor.</description>
     </key>
@@ -790,7 +790,7 @@
       <summary>Show the workspace switch head-up when workspace is changed by scrolling on the panel</summary>
     </key>
     <key name="scroll-icon-action" enum="org.gnome.shell.extensions.dash-to-workspaces.scrollAction">
-      <default>'CYCLE_WINDOWS'</default>
+      <default>'PASS_THROUGH'</default>
       <summary>Action when scrolling over a running app</summary>
       <description>Set the action that is executed when scrolling over a running application</description>
     </key>
