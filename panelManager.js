@@ -33,6 +33,12 @@ import * as PanelSettings from './panelSettings.js'
 import * as Proximity from './proximity.js'
 import * as Utils from './utils.js'
 import * as DesktopIconsIntegration from './desktopIconsIntegration.js'
+import * as ShellCompat from './compat/shellCompat.js'
+import { ShellPatches } from './shellPatches.js'
+import {
+  PANEL_FULL_RESET_KEYS,
+  PANEL_GEOMETRY_REFRESH_KEYS,
+} from './prefs/constants.js'
 import {
   DTP_EXTENSION,
   SETTINGS,
@@ -47,24 +53,18 @@ import Meta from 'gi://Meta'
 import Shell from 'gi://Shell'
 import St from 'gi://St'
 
-import * as AppDisplay from 'resource:///org/gnome/shell/ui/appDisplay.js'
 import * as BoxPointer from 'resource:///org/gnome/shell/ui/boxpointer.js'
-import * as LookingGlass from 'resource:///org/gnome/shell/ui/lookingGlass.js'
 import * as Main from 'resource:///org/gnome/shell/ui/main.js'
 import * as PanelMenu from 'resource:///org/gnome/shell/ui/panelMenu.js'
 import { NotificationsMonitor } from './notificationsMonitor.js'
 import { Workspace } from 'resource:///org/gnome/shell/ui/workspace.js'
 import * as Layout from 'resource:///org/gnome/shell/ui/layout.js'
-import { InjectionManager } from 'resource:///org/gnome/shell/extensions/extension.js'
-import {
-  SecondaryMonitorDisplay,
-  WorkspacesView,
-} from 'resource:///org/gnome/shell/ui/workspacesView.js'
+import { WorkspacesView, SecondaryMonitorDisplay } from './shellPatches.js'
 
 export const PanelManager = class {
   constructor() {
     this.overview = new Overview.Overview(this)
-    this._injectionManager = new InjectionManager()
+    this._shellPatches = new ShellPatches(this)
   }
 
   enable(reset) {
@@ -77,23 +77,9 @@ export const PanelManager = class {
       Main.layoutManager.monitors[dtpPrimaryIndex] ||
       Main.layoutManager.primaryMonitor
     this.proximityManager = new Proximity.ProximityManager()
+    this.notificationsMonitor = new NotificationsMonitor()
 
-    // g-s version 49 switched to clutter gestures
-    if (!AppDisplay.AppIcon.prototype._removeMenuTimeout)
-      AppDisplay.AppIcon.prototype._setPopupTimeout =
-        AppDisplay.AppIcon.prototype._removeMenuTimeout = this._emptyFunc
-
-    this._oldFindIndexForActor = Main.layoutManager.findIndexForActor
-    Main.layoutManager.findIndexForActor = (actor) => {
-      if ('_dtpIndex' in actor) return actor._dtpIndex
-      let prev = this._oldFindIndexForActor
-      if (typeof prev === 'function')
-        return prev.call(Main.layoutManager, actor)
-      return Layout.LayoutManager.prototype.findIndexForActor.call(
-        Main.layoutManager,
-        actor,
-      )
-    }
+    this._shellPatches.enableCore()
 
     let keepTopPanel =
       USE_SAFE_DEFAULTS_CONFLICTING || SETTINGS.get_boolean('stockgs-keep-top-panel')
@@ -128,133 +114,15 @@ export const PanelManager = class {
 
     if (reset) return
 
-    this.notificationsMonitor = new NotificationsMonitor()
-
     this._desktopIconsUsableArea =
       new DesktopIconsIntegration.DesktopIconsUsableAreaClass()
 
-    // NOTE: 不再覆盖 Main.layoutManager._updatePanelBarrier。
-    // 之前的覆盖在 GNOME Shell 49 上会触发 `_destroyPanelBarrier is not a function`，导致扩展进入 ERROR。
-    // 原生 LayoutManager 的 panel barrier 更新足够满足 DtW；DtW 自己的面板 barrier 如有需要可单独处理。
-
-    let dtpActive =
-      USE_SAFE_DEFAULTS_CONFLICTING ||
-      !!(global.dashToPanel && global.dashToPanel.panels)
-    this._skippedOverviewHotCornerPatch = dtpActive
-
-    if (!dtpActive) {
-      this._oldUpdateHotCorners = Main.layoutManager._updateHotCorners
-      Main.layoutManager._updateHotCorners = newUpdateHotCorners.bind(
-        Main.layoutManager,
-      )
-      Main.layoutManager._updateHotCorners()
-
-      this._forceHotCornerId = SETTINGS.connect(
-        'changed::stockgs-force-hotcorner',
-        () => Main.layoutManager._updateHotCorners(),
-      )
-
-      if (Main.layoutManager._interfaceSettings) {
-        this._enableHotCornersId = Main.layoutManager._interfaceSettings.connect(
-          'changed::enable-hot-corners',
-          () => Main.layoutManager._updateHotCorners(),
-        )
-      }
-
-      this._oldUpdateWorkspacesViews =
-        Main.overview._overview._controls._workspacesDisplay._updateWorkspacesViews
-      Main.overview._overview._controls._workspacesDisplay._updateWorkspacesViews =
-        this._newUpdateWorkspacesViews.bind(
-          Main.overview._overview._controls._workspacesDisplay,
-        )
-
-      this._oldSetPrimaryWorkspaceVisible =
-        Main.overview._overview._controls._workspacesDisplay.setPrimaryWorkspaceVisible
-      Main.overview._overview._controls._workspacesDisplay.setPrimaryWorkspaceVisible =
-        this._newSetPrimaryWorkspaceVisible.bind(
-          Main.overview._overview._controls._workspacesDisplay,
-        )
-    }
-
-    let panelManager = this
-    this._injectionManager.overrideMethod(
-      BoxPointer.BoxPointer.prototype,
-      'vfunc_get_preferred_height',
-      () =>
-        function (forWidth) {
-          let alloc = { min_size: 0, natural_size: 0 }
-
-          ;[alloc.min_size, alloc.natural_size] =
-            this.vfunc_get_preferred_height(forWidth)
-
-          return panelManager._getBoxPointerPreferredHeight(this, alloc)
-        },
-    )
-
-    let activitiesChild = Main.panel.statusArea.activities.get_first_child()
-
-    if (activitiesChild?.constructor.name == 'WorkspaceIndicators') {
-      this._injectionManager.overrideMethod(
-        Object.getPrototypeOf(
-          // WorkspaceDot in activities button
-          activitiesChild.get_first_child(),
-        ),
-        'vfunc_get_preferred_width',
-        (get_preferred_width) =>
-          function (forHeight) {
-            return Utils.getBoxLayoutVertical(this.get_parent())
-              ? [0, forHeight]
-              : get_preferred_width.call(this, forHeight)
-          },
-      )
-    }
-
-    LookingGlass.LookingGlass.prototype._oldResize =
-      LookingGlass.LookingGlass.prototype._resize
-    LookingGlass.LookingGlass.prototype._resize = _newLookingGlassResize
-
-    LookingGlass.LookingGlass.prototype._oldOpen =
-      LookingGlass.LookingGlass.prototype.open
-    LookingGlass.LookingGlass.prototype.open = _newLookingGlassOpen
-
-    Main.messageTray._bannerBin.ease = (params) => {
-      if (params.y === 0) {
-        let panelOnPrimary = this.allPanels.find(
-          (p) => p.monitor == Main.layoutManager.primaryMonitor,
-        )
-
-        if (
-          panelOnPrimary &&
-          panelOnPrimary.intellihide?.enabled &&
-          panelOnPrimary.geom.position == St.Side.TOP &&
-          panelOnPrimary.panelBox.visible
-        )
-          params.y += panelOnPrimary.geom.outerSize
-      }
-
-      Object.getPrototypeOf(Main.messageTray._bannerBin).ease.call(
-        Main.messageTray._bannerBin,
-        params,
-      )
-    }
+    this._shellPatches.enableFull()
+    this._skippedOverviewHotCornerPatch =
+      this._shellPatches.skippedOverviewHotCornerPatch
 
     this._signalsHandler = new Utils.GlobalSignalsHandler()
 
-    // 原生 GNOME 顶栏（Main.layoutManager.panelBox）避让：
-    // - GNOME Shell 原生 _updateBoxes() 会把 panelBox 设成整屏宽（monitor.width）
-    // - 这里在“仍使用原生顶栏”的情况下，把 panelBox 的 x/width 改为 work area 的 x/width
-    //   这样当右侧 DtW 产生 RIGHT strut 后，顶栏会缩短避免覆盖右侧面板。
-    this._oldLayoutUpdateBoxes = Main.layoutManager._updateBoxes
-    this._topPanelBoxUpdateQueued = false
-    Main.layoutManager._updateBoxes = (...args) => {
-      // 先跑原逻辑（更新键盘盒等），再做 panelBox 的 workarea 修正
-      if (typeof this._oldLayoutUpdateBoxes === 'function')
-        this._oldLayoutUpdateBoxes.apply(Main.layoutManager, args)
-      // 这里直接同步修正，避免后续又被原生逻辑覆盖导致“看起来没生效”
-      this._updateTopPanelBoxFromWorkArea()
-    }
-
-    //listen settings
     this._signalsHandler.add(
       [
         SETTINGS,
@@ -263,15 +131,7 @@ export const PanelManager = class {
       ],
       [
         SETTINGS,
-        [
-          'changed::primary-monitor',
-          'changed::multi-monitors',
-          'changed::isolate-monitors',
-          'changed::panel-positions',
-          'changed::panel-lengths',
-          'changed::panel-anchors',
-          'changed::stockgs-keep-top-panel',
-        ],
+        PANEL_FULL_RESET_KEYS.map((k) => `changed::${k}`),
         (settings, settingChanged) => {
           PanelSettings.clearCache(settingChanged)
           this._reset()
@@ -287,18 +147,20 @@ export const PanelManager = class {
       ],
       [
         SETTINGS,
-        'changed::intellihide-key-toggle-text',
-        () => this._setKeyBindings(true),
-      ],
-      [
-        SETTINGS,
-        'changed::panel-sizes',
-        () => {
+        PANEL_GEOMETRY_REFRESH_KEYS.map((k) => `changed::${k}`),
+        (settings, settingChanged) => {
+          PanelSettings.clearCache(settingChanged)
+          this._refreshAllPanelGeometry()
           GLib.idle_add(GLib.PRIORITY_LOW, () => {
             this._setDesktopIconsMargins()
             return GLib.SOURCE_REMOVE
           })
         },
+      ],
+      [
+        SETTINGS,
+        'changed::intellihide-key-toggle-text',
+        () => this._setKeyBindings(true),
       ],
       [
         Utils.DisplayWrapper.getMonitorManager(),
@@ -312,7 +174,6 @@ export const PanelManager = class {
           }
         },
       ],
-      // 当 struts/workarea 变化时（例如 DtW 宽度/显示状态变化），让原生顶栏重新按 workarea 缩短
       [global.display, 'workareas-changed', () => this._queueUpdateTopPanelBox()],
     )
 
@@ -337,28 +198,24 @@ export const PanelManager = class {
     }
 
     this._setKeyBindings(true)
-
-    // 启用后补一次（避免首次 enable 时 workarea 还没刷新）
     this._queueUpdateTopPanelBox()
+  }
 
-    // keep GS overview.js from blowing away custom panel styles
-    let keepTop =
-      USE_SAFE_DEFAULTS_CONFLICTING || SETTINGS.get_boolean('stockgs-keep-top-panel')
-    if (!keepTop)
-      Object.defineProperty(Main.panel, 'style', {
-        configurable: true,
-        set() {},
-      })
+  _refreshAllPanelGeometry() {
+    this.allPanels.forEach((p) => {
+      try {
+        p._resetGeometry?.()
+      } catch (e) {
+        // ignore
+      }
+    })
   }
 
   disable(reset) {
     this.primaryPanel && this.overview.disable()
     this.proximityManager.destroy()
-
-    if (AppDisplay.AppIcon.prototype._removeMenuTimeout == this._emptyFunc) {
-      delete AppDisplay.AppIcon.prototype._setPopupTimeout
-      delete AppDisplay.AppIcon.prototype._removeMenuTimeout
-    }
+    this.notificationsMonitor?.destroy()
+    this.notificationsMonitor = null
 
     this.allPanels.forEach((p) => {
       p.taskbar.iconAnimator.pause()
@@ -416,57 +273,12 @@ export const PanelManager = class {
 
     if (reset) return
 
-    this._injectionManager.clear()
-
     this._setKeyBindings(false)
-
-    this.notificationsMonitor.destroy()
+    this._shellPatches.disableFull()
 
     this._signalsHandler.destroy()
 
-    if (!this._skippedOverviewHotCornerPatch) {
-      Main.layoutManager._updateHotCorners = this._oldUpdateHotCorners
-      Main.layoutManager._updateHotCorners()
-
-      SETTINGS.disconnect(this._forceHotCornerId)
-      if (this._enableHotCornersId) {
-        Main.layoutManager._interfaceSettings.disconnect(this._enableHotCornersId)
-      }
-
-      Main.overview._overview._controls._workspacesDisplay._updateWorkspacesViews =
-        this._oldUpdateWorkspacesViews
-      Main.overview._overview._controls._workspacesDisplay.setPrimaryWorkspaceVisible =
-        this._oldSetPrimaryWorkspaceVisible
-    }
-
-    if (this._oldFindIndexForActor !== undefined) {
-      Main.layoutManager.findIndexForActor = this._oldFindIndexForActor
-      this._oldFindIndexForActor = undefined
-    } else delete Main.layoutManager.findIndexForActor
-
-    // 保持原生 LayoutManager._updatePanelBarrier，不做恢复/重写
-
-    // 恢复原生 LayoutManager 行为
-    if (this._oldLayoutUpdateBoxes) {
-      Main.layoutManager._updateBoxes = this._oldLayoutUpdateBoxes
-      this._oldLayoutUpdateBoxes = null
-    }
-
-    LookingGlass.LookingGlass.prototype._resize =
-      LookingGlass.LookingGlass.prototype._oldResize
-    delete LookingGlass.LookingGlass.prototype._oldResize
-
-    LookingGlass.LookingGlass.prototype.open =
-      LookingGlass.LookingGlass.prototype._oldOpen
-    delete LookingGlass.LookingGlass.prototype._oldOpen
-
-    delete Main.messageTray._bannerBin.ease
-
-    // 在 USE_SAFE_DEFAULTS_CONFLICTING 模式下，不删除 Main.panel.style
-    // 因为可能没有设置它，或者 Dash to Panel 也在使用它
-    if (!USE_SAFE_DEFAULTS_CONFLICTING) {
-      delete Main.panel.style
-    }
+    this._shellPatches.disableCore()
     this._desktopIconsUsableArea.destroy()
     this._desktopIconsUsableArea = null
   }
@@ -746,10 +558,8 @@ export const PanelManager = class {
   }
 
   checkIfFocusedMonitor(monitor) {
-    return (
-      Main.overview._overview._controls._workspacesDisplay._primaryIndex ==
-      monitor.index
-    )
+    const wsDisplay = ShellCompat.getWorkspacesDisplay()
+    return wsDisplay?._primaryIndex == monitor.index
   }
 
   _createPanel(monitor, isStandalone) {
@@ -769,7 +579,7 @@ export const PanelManager = class {
     // clipContainer 只是裁剪/定位容器：
     // - work area/struts 由 panelBox（trackChrome affectsStruts: true）提供
     // - intellihide 显示/隐藏时会动态关闭/开启 struts（见 intellihide._setTrackPanel）
-    Main.layoutManager.addChrome(clipContainer, { affectsInputRegion: false })
+    ShellCompat.addLayoutChrome(clipContainer, { reactive: false })
     clipContainer.add_child(panelBox)
 
     panel = new Panel.Panel(
@@ -786,14 +596,10 @@ export const PanelManager = class {
     panelBox.set_position(0, 0)
     panelBox.set_width(-1)
 
-    Main.layoutManager.trackChrome(panel, {
-      affectsInputRegion: true,
-      affectsStruts: false,
-    })
+    ShellCompat.trackLayoutChrome(panel, { affectsStruts: false })
 
-    Main.layoutManager.trackChrome(panelBox, {
+    ShellCompat.trackLayoutChrome(panelBox, {
       trackFullscreen: true,
-      // DtW 的面板需要提供 strut 才能正确缩小 work area（最大化窗口不覆盖面板）
       affectsStruts: true,
     })
 
@@ -1018,128 +824,4 @@ export const IconAnimator = class {
       }
     }
   }
-}
-
-function newUpdateHotCorners() {
-  // destroy old hot corners
-  this.hotCorners.forEach(function (corner) {
-    if (corner) corner.destroy()
-  })
-  this.hotCorners = []
-
-  //global.settings is ubuntu specific setting to disable the hot corner (Tweak tool > Top Bar > Activities Overview Hot Corner)
-  //this._interfaceSettings is for the setting to disable the hot corner introduced in gnome-shell 3.34
-  if (
-    (global.settings.list_keys().indexOf('enable-hot-corners') >= 0 &&
-      !global.settings.get_boolean('enable-hot-corners')) ||
-    (this._interfaceSettings &&
-      !this._interfaceSettings.get_boolean('enable-hot-corners'))
-  ) {
-    this.emit('hot-corners-changed')
-    return
-  }
-
-  // build new hot corners
-  for (let i = 0; i < this.monitors.length; i++) {
-    let panel = Utils.find(
-      global.workspacesToDock.panels,
-      (p) => p.monitor.index == i,
-    )
-    let panelPosition = panel ? panel.geom.position : St.Side.BOTTOM
-    let panelTopLeft =
-      panelPosition == St.Side.TOP || panelPosition == St.Side.LEFT
-    let monitor = this.monitors[i]
-    let cornerX = this._rtl ? monitor.x + monitor.width : monitor.x
-    let cornerY = monitor.y
-
-    let haveTopLeftCorner = true
-
-    // If the panel is on the bottom, unless this is explicitly forced, don't add a topleft
-    // hot corner unless it is actually a top left panel. Otherwise, it stops the mouse
-    // as you are dragging across. In the future, maybe we will automatically move the
-    // hotcorner to the bottom when the panel is positioned at the bottom
-    if (
-      i != this.primaryIndex ||
-      (!panelTopLeft && !SETTINGS.get_boolean('stockgs-force-hotcorner'))
-    ) {
-      // Check if we have a top left (right for RTL) corner.
-      // I.e. if there is no monitor directly above or to the left(right)
-      let besideX = this._rtl ? monitor.x + 1 : cornerX - 1
-      let besideY = cornerY
-      let aboveX = cornerX
-      let aboveY = cornerY - 1
-
-      for (let j = 0; j < this.monitors.length; j++) {
-        if (i == j) continue
-        let otherMonitor = this.monitors[j]
-        if (
-          besideX >= otherMonitor.x &&
-          besideX < otherMonitor.x + otherMonitor.width &&
-          besideY >= otherMonitor.y &&
-          besideY < otherMonitor.y + otherMonitor.height
-        ) {
-          haveTopLeftCorner = false
-          break
-        }
-        if (
-          aboveX >= otherMonitor.x &&
-          aboveX < otherMonitor.x + otherMonitor.width &&
-          aboveY >= otherMonitor.y &&
-          aboveY < otherMonitor.y + otherMonitor.height
-        ) {
-          haveTopLeftCorner = false
-          break
-        }
-      }
-    }
-
-    if (haveTopLeftCorner) {
-      let corner = new Layout.HotCorner(this, monitor, cornerX, cornerY)
-
-      corner.setBarrierSize = (size) =>
-        Object.getPrototypeOf(corner).setBarrierSize.call(
-          corner,
-          Math.min(size, Panel.GS_PANEL_SIZE),
-        )
-      corner.setBarrierSize(panel ? panel.geom.innerSize : Panel.GS_PANEL_SIZE)
-      this.hotCorners.push(corner)
-    } else {
-      this.hotCorners.push(null)
-    }
-  }
-
-  this.emit('hot-corners-changed')
-}
-
-function _newLookingGlassResize() {
-  let primaryMonitorPanel = Utils.find(
-    global.workspacesToDock.panels,
-    (p) => p.monitor == Main.layoutManager.primaryMonitor,
-  )
-  let keepTop =
-    USE_SAFE_DEFAULTS_CONFLICTING || SETTINGS.get_boolean('stockgs-keep-top-panel')
-  let topOffset =
-    primaryMonitorPanel.geom.position == St.Side.TOP
-      ? primaryMonitorPanel.geom.outerSize +
-        (keepTop ? Main.layoutManager.panelBox.height : 0) +
-        8
-      : Panel.GS_PANEL_SIZE
-
-  this._oldResize()
-
-  this._hiddenY = Main.layoutManager.primaryMonitor.y + topOffset - this.height
-  this._targetY = this._hiddenY + this.height
-  this.y = this._hiddenY
-
-  this._objInspector.set_position(
-    this.x + Math.floor(this.width * 0.1),
-    this._targetY + Math.floor(this.height * 0.1),
-  )
-}
-
-function _newLookingGlassOpen() {
-  if (this._open) return
-
-  this._resize()
-  this._oldOpen()
 }

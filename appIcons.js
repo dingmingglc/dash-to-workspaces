@@ -40,8 +40,8 @@ import * as Util from 'resource:///org/gnome/shell/misc/util.js'
 import * as BoxPointer from 'resource:///org/gnome/shell/ui/boxpointer.js'
 import { EventEmitter } from 'resource:///org/gnome/shell/misc/signals.js'
 
-import { Hold } from './intellihide.js'
 import * as Utils from './utils.js'
+import { handleAppNotifications } from './appIcons/notifications.js'
 import * as Taskbar from './taskbar.js'
 import {
   DTP_EXTENSION,
@@ -302,11 +302,15 @@ export const TaskbarAppIcon = GObject.registerClass(
           'notify::pressed',
           this._onAppIconPressedChanged_GtkWorkaround.bind(this),
         ],
-        [
-          this.dtpPanel.panelManager.notificationsMonitor,
-          `update-${this.app.id}`,
-          this._handleNotifications.bind(this),
-        ],
+        ...(this.dtpPanel.panelManager.notificationsMonitor
+          ? [
+              [
+                this.dtpPanel.panelManager.notificationsMonitor,
+                `update-${this.app.id}`,
+                this._handleNotifications.bind(this),
+              ],
+            ]
+          : []),
         [
           SETTINGS,
           'changed::progress-show-count',
@@ -1636,29 +1640,7 @@ export const TaskbarAppIcon = GObject.registerClass(
     }
 
     _handleNotifications() {
-      if (!this._nWindows && !this.window) return
-
-      let monitor = this.dtpPanel.panelManager.notificationsMonitor
-      let state = monitor.getState(this.app)
-      let count = 0
-
-      if (!state) return
-
-      if (SETTINGS.get_boolean('progress-show-count')) {
-        this.iconAnimator[`${state.urgent ? 'add' : 'remove'}Animation`](
-          this.icon._iconBin,
-          'dance',
-        )
-
-        if (state.total) {
-          count = state.total > 9 ? '9+' : state.total
-          this.dtpPanel.intellihide.revealAndHold(Hold.NOTIFY)
-        } else this.dtpPanel.intellihide.release(Hold.NOTIFY)
-      }
-
-      this._notificationsCount = count
-
-      this._maybeUpdateNumberOverlay()
+      handleAppNotifications(this)
     }
 
     _maybeUpdateNumberOverlay() {
@@ -2413,8 +2395,9 @@ export const MyShowAppsIconMenu = class extends PopupMenu.PopupMenu {
   }
 
   _appendMenuItem(labelText) {
-    // FIXME: app-well-menu-item style
     let item = new PopupMenu.PopupMenuItem(labelText)
+    // Align visual style with GNOME app icon context menu items.
+    item.add_style_class_name('app-well-menu-item')
     this.addMenuItem(item)
     return item
   }

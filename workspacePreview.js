@@ -18,19 +18,19 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js'
 import * as BoxPointer from 'resource:///org/gnome/shell/ui/boxpointer.js'
 import * as AppFavorites from 'resource:///org/gnome/shell/ui/appFavorites.js'
 
+import {
+  APP_ICON_MAX,
+  DEFAULT_APP_ICON_SIZE,
+  MIN_PREVIEW_HEIGHT,
+  NAME_HEIGHT,
+  PREVIEW_HEIGHT,
+  SHORTCUT_SLOTS,
+  WM_PREFS_SCHEMA,
+} from './workspacePreview/constants.js'
 import * as Utils from './utils.js'
 import * as AppIcons from './appIcons.js'
 import { SETTINGS } from './extension.js'
 import { gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.js'
-
-const PREVIEW_HEIGHT = 120
-const NAME_HEIGHT = 30
-const WM_PREFS_SCHEMA = 'org.gnome.desktop.wm.preferences'
-// workspace 预览下方应用图标默认尺寸（px）
-const DEFAULT_APP_ICON_SIZE = 48
-const APP_ICON_MAX = 8
-const SHORTCUT_SLOTS = 5
-const MIN_PREVIEW_HEIGHT = 24
 
 export const WorkspacePreviewView = GObject.registerClass(
   {},
@@ -107,10 +107,20 @@ export const WorkspacePreviewView = GObject.registerClass(
       ])
 
       // 在整个预览视图上右键切换 intellihide（包括空白区域）
+      // 用 captured-event：WorkspaceThumbnail 的 WindowClone 会吃掉 button-press，
+      // 冒泡阶段经常收不到，表现为“有时右键不灵”。
       this._signalsHandler.add([
         this,
-        'button-press-event',
-        (actor, event) => this._handleRightClick(actor, event),
+        'captured-event',
+        (actor, event) => {
+          try {
+            if (event.type() !== Clutter.EventType.BUTTON_PRESS)
+              return Clutter.EVENT_PROPAGATE
+            return this._handleRightClick(actor, event)
+          } catch (e) {
+            return Clutter.EVENT_PROPAGATE
+          }
+        },
       ])
 
       // 预览视图自身 allocation 变化时，只做几何更新（避免每个 item 都监听 allocation）
@@ -121,7 +131,23 @@ export const WorkspacePreviewView = GObject.registerClass(
           this._timeoutsHandler.add([
             'ws-preview-self-alloc-geom',
             50,
-            () => this._updateWorkspacesGeometry(),
+            () => {
+              this._updateShortcutsBar()
+              this._updateWorkspacesGeometry()
+            },
+          ])
+        },
+      ])
+
+      // 面板总宽度变化时重算快捷栏槽位宽度（BOTH 模式横跨预览 + dash）
+      this._signalsHandler.add([
+        this.panel,
+        'notify::allocation',
+        () => {
+          this._timeoutsHandler.add([
+            'ws-preview-panel-alloc-shortcuts',
+            50,
+            () => this._updateShortcutsBar(),
           ])
         },
       ])
@@ -171,7 +197,10 @@ export const WorkspacePreviewView = GObject.registerClass(
         [
           SETTINGS,
           'changed::workspace-preview-display-mode',
-          () => this._updateVisibility(),
+          () => {
+            this._updateVisibility()
+            this._updateShortcutsBar()
+          },
         ],
         [
           SETTINGS,
@@ -179,6 +208,7 @@ export const WorkspacePreviewView = GObject.registerClass(
           () => {
             // 仅几何变化：避免重建缩略图/背景导致卡顿
             this._updateLayout()
+            this._updateShortcutsBar()
             if (this._workspaceItems?.length) this._updateWorkspacesGeometry()
             else this._updateWorkspaces()
           },
@@ -237,6 +267,143 @@ export const WorkspacePreviewView = GObject.registerClass(
       )
     }
 
+    _isSidePanel() {
+      const pos = this.panel?.geom?.position
+      return pos === St.Side.LEFT || pos === St.Side.RIGHT
+    }
+
+    /** 预览列/行主尺寸（侧栏=宽，上下栏=高）。 */
+    _getPreviewMainSize() {
+      try {
+        const box = this.get_allocation_box()
+        if (this._isSidePanel()) {
+          const w = box.x2 - box.x1
+          if (w > 0) return w
+        } else {
+          const h = box.y2 - box.y1
+          if (h > 0) return h
+        }
+      } catch (e) {
+        // ignore
+      }
+      try {
+        return SETTINGS.get_int('workspace-preview-width')
+      } catch (e) {
+        return 200
+      }
+    }
+
+    /** 预览列实际宽度（优先用 allocation，避免与设置值不一致导致两侧留白）。 */
+    _getPreviewColumnWidth() {
+      if (!this._isSidePanel()) {
+        // 上/下：每个预览项宽度由高度按 workarea 比例推算
+        return this._computePreviewWidth(
+          this._getPreviewMainSize(),
+          this._workspaceItems?.length || 1,
+          SETTINGS.get_string('workspace-preview-name-position'),
+        )
+      }
+      return this._getPreviewMainSize()
+    }
+
+    _getItemPreviewWidth(item) {
+      const border = 4
+      try {
+        const box = item.get_allocation_box()
+        const w = box.x2 - box.x1
+        if (w > border) return w - border
+      } catch (e) {
+        // ignore
+      }
+      return this._getPreviewColumnWidth()
+    }
+
+    _getItemPreviewHeight(item, fallback) {
+      const border = 4
+      try {
+        const box = item.get_allocation_box()
+        const h = box.y2 - box.y1
+        if (h > border) return h - border
+      } catch (e) {
+        // ignore
+      }
+      return fallback
+    }
+
+    /** intellihide 关闭时面板通过 struts 固定占位；开启时 workarea 始终为全屏。 */
+    _panelReservesStruts() {
+      return !this.panel?.intellihide?.enabled
+    }
+
+    /**
+     * 工作区缩略图 porthole：与 shell workarea 对齐；仅在面板固定占位时再扣除面板条带。
+     */
+    _getWorkAreaForPreview() {
+      const mon = this.panel?.monitor
+      const geom = this.panel?.geom
+      if (!mon || !geom) return null
+
+      let wa = null
+      try {
+        wa = Main.layoutManager.getWorkAreaForMonitor(mon.index)
+      } catch (e) {
+        wa = null
+      }
+
+      const fallback = {
+        x: mon.x,
+        y: mon.y,
+        width: mon.width,
+        height: mon.height,
+      }
+      if (!wa) return fallback
+
+      // 自动隐藏：桌面区域不扣除面板（面板浮在上面，不占 struts）
+      if (!this._panelReservesStruts()) return wa
+
+      const panelSpan = Math.max(0, geom.outerSize || geom.w || 0)
+      if (!panelSpan) return wa
+
+      const rect = {
+        x: wa.x,
+        y: wa.y,
+        width: wa.width,
+        height: wa.height,
+      }
+      const pos = geom.position
+
+      // 固定面板：若 workarea 尚未反映整条面板宽度，手动扣除
+      if (pos === St.Side.RIGHT) {
+        const desktopW = Math.max(1, mon.width - panelSpan)
+        rect.x = mon.x
+        rect.width = Math.min(rect.width, desktopW)
+      } else if (pos === St.Side.LEFT) {
+        const desktopW = Math.max(1, mon.width - panelSpan)
+        const desktopX = mon.x + panelSpan
+        if (rect.x < desktopX) rect.x = desktopX
+        rect.width = Math.min(rect.width, desktopW)
+      } else if (pos === St.Side.TOP) {
+        const desktopH = Math.max(1, mon.height - panelSpan)
+        const desktopY = mon.y + panelSpan
+        if (rect.y < desktopY) rect.y = desktopY
+        rect.height = Math.min(rect.height, desktopH)
+      } else if (pos === St.Side.BOTTOM) {
+        const desktopH = Math.max(1, mon.height - panelSpan)
+        rect.height = Math.min(rect.height, desktopH)
+      }
+
+      return rect
+    }
+
+    _applyThumbnailPorthole(item, wa) {
+      if (!item?._dtwThumbnail || !wa) return
+      try {
+        item._dtwThumbnail.setPorthole(wa.x, wa.y, wa.width, wa.height)
+      } catch (e) {
+        // ignore
+      }
+    }
+
     _getPreviewAppIconSize() {
       // 预览区下方应用图标大小（允许设置覆盖）
       let iconSize = DEFAULT_APP_ICON_SIZE
@@ -246,6 +413,77 @@ export const WorkspacePreviewView = GObject.registerClass(
         iconSize = DEFAULT_APP_ICON_SIZE
       }
       return Math.max(16, Math.min(96, iconSize))
+    }
+
+    /** 底部快捷栏横跨宽度：BOTH 模式下占满整条面板（预览 + dash）。 */
+    _getShortcutBarSpanWidth() {
+      const displayMode = SETTINGS.get_string('workspace-preview-display-mode')
+      const showPanel = displayMode === 'PANEL' || displayMode === 'BOTH'
+      if (showPanel && this.panel) {
+        try {
+          const box = this.panel.get_allocation_box()
+          const w = box.x2 - box.x1
+          if (w > 0) return w
+        } catch (e) {
+          // ignore
+        }
+        try {
+          const previewW = SETTINGS.get_int('workspace-preview-width')
+          const taskW = this.panel.geom?.w ?? 0
+          if (previewW > 0 && taskW > 0) return previewW + taskW
+        } catch (e) {
+          // ignore
+        }
+      }
+      return this._getPreviewColumnWidth()
+    }
+
+    /** 快捷栏：侧栏横跨底部；上/下栏竖排在最右侧。 */
+    _getShortcutBarLayout() {
+      const preferred = this._getPreviewAppIconSize()
+      const slotCount = SHORTCUT_SLOTS
+      const side = this._isSidePanel()
+
+      if (side) {
+        const colWidth = this._getShortcutBarSpanWidth()
+        const slotWidth = Math.max(20, Math.floor(colWidth / slotCount))
+        const chrome = Math.max(2, Math.min(6, Math.floor(slotWidth * 0.1)))
+        const iconSize = Math.max(16, Math.min(preferred, slotWidth - chrome))
+        return {
+          vertical: false,
+          colWidth,
+          slotWidth,
+          iconSize,
+          chrome,
+          barHeight: iconSize + chrome + 4,
+          barWidth: colWidth,
+        }
+      }
+
+      // 上/下：快捷栏竖排，宽度由图标决定，高度填满预览行
+      let barHeight = this._getPreviewMainSize()
+      try {
+        const box = this.panel?.get_allocation_box?.()
+        if (box) {
+          const h = box.y2 - box.y1
+          if (h > 0) barHeight = h
+        }
+      } catch (e) {
+        // ignore
+      }
+      const slotHeight = Math.max(20, Math.floor(barHeight / slotCount))
+      const chrome = Math.max(2, Math.min(6, Math.floor(slotHeight * 0.1)))
+      const iconSize = Math.max(16, Math.min(preferred, slotHeight - chrome))
+      const barWidth = iconSize + chrome + 4
+      return {
+        vertical: true,
+        colWidth: barWidth,
+        slotWidth: barWidth,
+        iconSize,
+        chrome,
+        barHeight,
+        barWidth,
+      }
     }
 
     _updateListSpacingForIconSize() {
@@ -276,19 +514,36 @@ export const WorkspacePreviewView = GObject.registerClass(
       layout.set_spacing(base + extra)
 
       // 最后一个 workspace 的图标也会向下溢出，需要给列表底部预留空间，
-      // 否则会被“底部快捷栏”挤住/覆盖。
+      // 否则会被“底部快捷栏”挤住/覆盖。侧栏用 padding-bottom；上/下用 padding-right。
       try {
-        const padBottom = extra
-        this._wsList.set_style(`padding-bottom: ${padBottom}px;`)
+        if (this._isSidePanel())
+          this._wsList.set_style(`padding-bottom: ${extra}px;`)
+        else this._wsList.set_style(`padding-right: ${extra}px;`)
       } catch (e) {
         // ignore
       }
     }
 
+    getShortcutsBarHeight() {
+      return this._getShortcutBarLayout().barHeight
+    }
+
+    getShortcutsBarWidth() {
+      return this._getShortcutBarLayout().barWidth
+    }
+
+    isShortcutsBarVertical() {
+      return !this._isSidePanel()
+    }
+
+    _allocateShortcutsBar(box) {
+      if (!this._shortcutsBar) return
+      this._shortcutsBar.visible = true
+      this._shortcutsBar.allocate(box)
+    }
+
     _getWorkspaceListAvailableHeightPx() {
-      // 可用于 workspace items 的高度：排除底部快捷栏一行
-      // 注意：不能用 _wsList 的 allocation（它已经包含了所有 items 的实际高度，包括溢出），
-      // 应该用父容器（this）的 allocation 减去快捷栏高度，这才是“可用空间上限”。
+      // 可用于 workspace items 的高度（快捷栏由 Panel 单独分配，不在此区域内）
       let totalH = 0
       try {
         const box = this.get_allocation_box()
@@ -299,16 +554,10 @@ export const WorkspacePreviewView = GObject.registerClass(
 
       // 如果还没 allocation，尝试用 monitor 和 panel 的几何信息估算（避免早期阶段算出 0）
       if (!totalH && this.panel?.monitor && this.panel?.geom) {
-        const isSidePanel =
-          this.panel.geom.position === St.Side.LEFT ||
-          this.panel.geom.position === St.Side.RIGHT
-        if (isSidePanel) {
+        if (this._isSidePanel()) {
           // 左/右面板：预览区域高度应该等于屏幕高度减去顶部避让
-          // 注意：不能直接用 this.panel.geom.h，因为它可能已经考虑了面板长度（length）和边距
-          // 预览区域应该填满整个屏幕高度（减去顶部避让），不受面板长度设置影响
           let topInset = 0
           try {
-            // 复用 panel 的顶部避让计算方法（避免重复实现）
             if (
               SETTINGS.get_boolean('workspace-preview-avoid-dash-to-panel') &&
               global.dashToPanel?.panels?.length &&
@@ -330,30 +579,49 @@ export const WorkspacePreviewView = GObject.registerClass(
         }
       }
 
-      // 快捷栏高度：优先用已设置的 height，否则按图标大小估算
-      let barH = 0
+      return Math.max(0, totalH)
+    }
+
+    _getWorkspaceListAvailableWidthPx() {
+      let totalW = 0
       try {
-        barH = this._shortcutsBar?.height ?? 0
+        const box = this.get_allocation_box()
+        totalW = (box.x2 - box.x1) || 0
       } catch (e) {
-        barH = 0
-      }
-      if (!barH) {
-        barH = this._getPreviewAppIconSize() + 10
+        totalW = 0
       }
 
-      return Math.max(0, totalH - barH)
+      if (!totalW && this.panel?.monitor && this.panel?.geom) {
+        if (this._isSidePanel()) {
+          try {
+            totalW = SETTINGS.get_int('workspace-preview-width') || 0
+          } catch (e) {
+            totalW = 0
+          }
+        } else {
+          totalW = Math.max(0, this.panel.monitor.width)
+        }
+      }
+
+      return Math.max(0, totalW)
     }
 
     _computePreviewHeight(previewWidth, workspaceCount, namePosition) {
       // 先按 workarea 比例算“理想高度”，再按可用高度缩小以塞下全部 workspace。
       let ideal = PREVIEW_HEIGHT
       try {
-        const wa = Main.layoutManager.getWorkAreaForMonitor(this.panel.monitor.index)
+        const wa = this._getWorkAreaForPreview()
         if (wa && wa.width > 0 && wa.height > 0) {
           ideal = Math.round((previewWidth * wa.height) / wa.width)
         }
       } catch (e) {
         // ignore
+      }
+
+      // 上/下：高度由预览行厚度决定，不再按数量纵向压缩
+      if (!this._isSidePanel()) {
+        const rowH = this._getPreviewMainSize()
+        return Math.max(MIN_PREVIEW_HEIGHT, rowH || ideal)
       }
 
       const avail = this._getWorkspaceListAvailableHeightPx()
@@ -378,9 +646,6 @@ export const WorkspacePreviewView = GObject.registerClass(
           : Math.ceil((this._getPreviewAppIconSize() + 6) / 2)
 
       // _wsList 的 padding-bottom 也需要计入（它会影响列表的实际占用高度）
-      // 注意：padding-bottom 的值等于 iconOverflowPx（由 _updateListSpacingForIconSize 设置）
-      // 两者计算逻辑一致：Math.ceil((iconSize + chromeOverheadPx) / 2)
-      // 直接使用 iconOverflowPx，避免从样式字符串解析
       const listPaddingBottom = iconOverflowPx
 
       const fixed =
@@ -393,7 +658,6 @@ export const WorkspacePreviewView = GObject.registerClass(
       }
 
       // 只有当“理想高度排布后真的放不下”时才缩小
-      // 注意：需要包含 listPaddingBottom，因为它会影响列表的实际占用高度
       const needTotal =
         n * (ideal + belowExtra + itemChrome) +
         (n - 1) * spacing +
@@ -407,6 +671,148 @@ export const WorkspacePreviewView = GObject.registerClass(
 
       // 缩小时允许缩到很小以保证塞得下（用户要求）
       return Math.max(MIN_PREVIEW_HEIGHT, Math.min(ideal, per))
+    }
+
+    _computePreviewWidth(previewHeight, workspaceCount, namePosition) {
+      const ideal = this._getIdealPreviewItemWidth(previewHeight)
+
+      if (this._isSidePanel()) return ideal
+
+      // 动态长度：按内容理想宽度，不向可用宽度拉伸/压缩
+      if (this.panel?.geom?.dynamic) return ideal
+
+      const avail = this._getWorkspaceListAvailableWidthPx()
+      const n = Math.max(1, workspaceCount || 1)
+
+      let spacing = 0
+      try {
+        spacing = this._wsList?.get_layout_manager?.()?.get_spacing?.() ?? 0
+      } catch (e) {
+        spacing = 0
+      }
+
+      const itemChrome = 4
+      const iconOverflowPx =
+        namePosition === 'BELOW'
+          ? 0
+          : Math.ceil((this._getPreviewAppIconSize() + 6) / 2)
+      const listPaddingEnd = iconOverflowPx
+      const fixed = (n - 1) * spacing + n * itemChrome + listPaddingEnd
+
+      if (!avail || avail < MIN_PREVIEW_HEIGHT * n) {
+        return ideal
+      }
+
+      const needTotal = n * (ideal + itemChrome) + (n - 1) * spacing + listPaddingEnd
+      if (needTotal <= avail) {
+        return ideal
+      }
+
+      let per = Math.floor((avail - fixed) / n)
+      if (!Number.isFinite(per)) per = ideal
+      return Math.max(MIN_PREVIEW_HEIGHT, Math.min(ideal, per))
+    }
+
+    _getIdealPreviewItemWidth(previewHeight) {
+      let ideal = previewHeight
+      try {
+        const wa = this._getWorkAreaForPreview()
+        if (wa && wa.width > 0 && wa.height > 0) {
+          ideal = Math.round((previewHeight * wa.width) / wa.height)
+        }
+      } catch (e) {
+        // ignore
+      }
+      return Math.max(MIN_PREVIEW_HEIGHT, ideal)
+    }
+
+    _getIdealPreviewItemHeight(previewWidth) {
+      let ideal = PREVIEW_HEIGHT
+      try {
+        const wa = this._getWorkAreaForPreview()
+        if (wa && wa.width > 0 && wa.height > 0) {
+          ideal = Math.round((previewWidth * wa.height) / wa.width)
+        }
+      } catch (e) {
+        // ignore
+      }
+      return Math.max(MIN_PREVIEW_HEIGHT, ideal)
+    }
+
+    /**
+     * 动态面板长度用：预览 + 快捷栏的自然尺寸（沿面板可变轴）。
+     * 上/下 → 返回宽度；左/右 → 返回高度。
+     */
+    getNaturalContentLength() {
+      const n = Math.max(1, this._workspaceItems?.length || 1)
+      let spacing = 0
+      try {
+        spacing =
+          this._wsList?.get_layout_manager?.()?.get_spacing?.() ??
+          SETTINGS.get_int('workspace-preview-spacing')
+      } catch (e) {
+        spacing = 0
+      }
+      const itemChrome = 4
+
+      if (this._isSidePanel()) {
+        const previewWidth = this._getPreviewMainSize()
+        const itemH = this._getIdealPreviewItemHeight(previewWidth)
+        const namePosition =
+          SETTINGS.get_string('workspace-preview-name-position') || 'BOTTOM_RIGHT'
+        const belowExtra = namePosition === 'BELOW' ? NAME_HEIGHT + 4 : 0
+        const iconOverflowPx =
+          namePosition === 'BELOW'
+            ? 0
+            : Math.ceil((this._getPreviewAppIconSize() + 6) / 2)
+        const listH =
+          n * (itemH + belowExtra + itemChrome) +
+          (n - 1) * spacing +
+          iconOverflowPx
+        const barH = this.getShortcutsBarHeight() || 0
+        return Math.max(1, listH + barH)
+      }
+
+      const previewHeight = this._getPreviewMainSize()
+      const itemW = this._getIdealPreviewItemWidth(previewHeight)
+      const namePosition =
+        SETTINGS.get_string('workspace-preview-name-position') || 'BOTTOM_RIGHT'
+      const iconOverflowPx =
+        namePosition === 'BELOW'
+          ? 0
+          : Math.ceil((this._getPreviewAppIconSize() + 6) / 2)
+      const listW =
+        n * (itemW + itemChrome) + (n - 1) * spacing + iconOverflowPx
+      const barW = this.getShortcutsBarWidth() || 0
+      return Math.max(1, listW + barW)
+    }
+
+    /**
+     * 等比缩放布局：contain；固定占位时贴面板边缘对齐，自动隐藏时居中。
+     */
+    _getPreviewScaleLayout(previewWidth, previewHeight, wa) {
+      const baseW = wa?.width ?? 0
+      const baseH = wa?.height ?? 0
+
+      if (baseW <= 0 || baseH <= 0 || previewWidth <= 0 || previewHeight <= 0) {
+        return { scale: 1, x: 0, y: 0 }
+      }
+
+      const scale = Math.min(previewWidth / baseW, previewHeight / baseH)
+      const contentW = baseW * scale
+      const contentH = baseH * scale
+      let x = Math.floor((previewWidth - contentW) / 2)
+      let y = Math.floor((previewHeight - contentH) / 2)
+
+      if (this._panelReservesStruts()) {
+        const pos = this.panel?.geom?.position
+        if (pos === St.Side.RIGHT) x = previewWidth - contentW
+        else if (pos === St.Side.LEFT) x = 0
+        else if (pos === St.Side.TOP) y = 0
+        else if (pos === St.Side.BOTTOM) y = previewHeight - contentH
+      }
+
+      return { scale, x, y }
     }
 
     _getShortcutAppIds() {
@@ -470,13 +876,16 @@ export const WorkspacePreviewView = GObject.registerClass(
       this._shortcutsBar = new St.Widget({
         layout_manager: new Clutter.BoxLayout({
           orientation: Clutter.Orientation.HORIZONTAL,
-          spacing: 6,
+          spacing: 0,
         }),
         reactive: true,
+        track_hover: true,
+        x_expand: true,
+        clip_to_allocation: true,
         style_class: 'workspace-preview-shortcuts-bar',
       })
-      // 根容器第二个 child：固定在底部（BoxLayout 会把 _wsList 拉伸到剩余空间）
-      this.add_child(this._shortcutsBar)
+      // 挂在 DTP Panel 根上，由 panel.js 分配区域
+      this.panel.add_child(this._shortcutsBar)
       this._updateShortcutsBar()
     }
 
@@ -547,7 +956,7 @@ export const WorkspacePreviewView = GObject.registerClass(
       return menu
     }
 
-    _createShortcutButton(slotIndex, appId, iconSize) {
+    _createShortcutButton(slotIndex, appId, iconSize, slotSize, vertical) {
       const isEmpty = !appId
       let child = null
       let targetApp = null
@@ -585,8 +994,13 @@ export const WorkspacePreviewView = GObject.registerClass(
         track_hover: true,
         can_focus: false,
         style_class: 'workspace-preview-shortcut-button',
+        x_expand: !vertical,
+        y_expand: !!vertical,
+        x_align: Clutter.ActorAlign.CENTER,
+        y_align: Clutter.ActorAlign.CENTER,
       })
-      btn.set_size(iconSize + 6, iconSize + 6)
+      if (vertical) btn.set_width(slotSize)
+      else btn.set_height(slotSize)
       btn.set_child(child)
 
       btn.connect('button-press-event', (_a, event) => {
@@ -634,12 +1048,34 @@ export const WorkspacePreviewView = GObject.registerClass(
     _updateShortcutsBar() {
       if (!this._shortcutsBar) return
 
-      const iconSize = this._getPreviewAppIconSize()
+      const layout = this._getShortcutBarLayout()
       const ids = this._getShortcutAppIds()
+      const vertical = !!layout.vertical
 
-      // 预留一行高度（图标 + 少量 padding）
       try {
-        this._shortcutsBar.set_height(iconSize + 10)
+        const lm = this._shortcutsBar.get_layout_manager?.()
+        lm?.set_spacing?.(0)
+        if (lm && 'orientation' in lm) {
+          lm.orientation = vertical
+            ? Clutter.Orientation.VERTICAL
+            : Clutter.Orientation.HORIZONTAL
+        }
+      } catch (e) {
+        // ignore
+      }
+
+      try {
+        if (vertical) {
+          this._shortcutsBar.set_width(layout.barWidth)
+          this._shortcutsBar.set_height(-1)
+          this._shortcutsBar.x_expand = false
+          this._shortcutsBar.y_expand = true
+        } else {
+          this._shortcutsBar.set_height(layout.barHeight)
+          this._shortcutsBar.set_width(-1)
+          this._shortcutsBar.x_expand = true
+          this._shortcutsBar.y_expand = false
+        }
       } catch (e) {
         // ignore
       }
@@ -652,13 +1088,20 @@ export const WorkspacePreviewView = GObject.registerClass(
       }
       this._shortcutsButtons = []
 
+      const slotSize = vertical ? layout.barWidth : layout.barHeight
       for (let i = 0; i < SHORTCUT_SLOTS; i++) {
-        const btn = this._createShortcutButton(i, ids[i], iconSize)
+        const btn = this._createShortcutButton(
+          i,
+          ids[i],
+          layout.iconSize,
+          slotSize,
+          vertical,
+        )
         this._shortcutsButtons.push(btn)
         this._shortcutsBar.add_child(btn)
       }
 
-      // 快捷栏高度变化会影响 workspace 可用高度，需重算 previewHeight
+      // 快捷栏尺寸变化会影响 workspace 可用空间，需重算 preview 几何
       this._timeoutsHandler.add([
         'ws-preview-shortcuts-reflow',
         0,
@@ -708,6 +1151,21 @@ export const WorkspacePreviewView = GObject.registerClass(
         this.y_expand = false
         this.set_margin_top(0)
       }
+
+      // workspace 列表方向：侧栏纵向，上/下横向
+      try {
+        const lm = this._wsList?.get_layout_manager?.()
+        if (lm && 'orientation' in lm) {
+          lm.orientation = isSidePanel
+            ? Clutter.Orientation.VERTICAL
+            : Clutter.Orientation.HORIZONTAL
+        }
+      } catch (e) {
+        // ignore
+      }
+
+      this._updateListSpacingForIconSize()
+      this._updateShortcutsBar()
     }
 
     _connectSignals() {
@@ -775,6 +1233,29 @@ export const WorkspacePreviewView = GObject.registerClass(
               'ws-preview-monitors',
               100,
               () => this._updateWorkspaces(),
+            ])
+          },
+        ],
+        // 面板展开/收起会改变“应扣除”的占用区域，需同步缩略图 porthole
+        [
+          this.panel?.panelBox,
+          ['notify::visible', 'notify::translation-x', 'notify::translation-y'],
+          () => {
+            this._timeoutsHandler.add([
+              'ws-preview-panel-occupy',
+              80,
+              () => this._updateWorkspacesGeometry(),
+            ])
+          },
+        ],
+        [
+          SETTINGS,
+          'changed::intellihide',
+          () => {
+            this._timeoutsHandler.add([
+              'ws-preview-intellihide',
+              80,
+              () => this._updateWorkspacesGeometry(),
             ])
           },
         ],
@@ -875,7 +1356,7 @@ export const WorkspacePreviewView = GObject.registerClass(
 
       // 新增（追加到末尾）
       if (current < desired) {
-        let previewWidth = SETTINGS.get_int('workspace-preview-width')
+        let previewWidth = this._getPreviewColumnWidth()
         let namePosition = SETTINGS.get_string('workspace-preview-name-position')
 
         // previewHeight 复用计算逻辑
@@ -975,7 +1456,7 @@ export const WorkspacePreviewView = GObject.registerClass(
 
     _getWorkAreaKey() {
       try {
-        let wa = Main.layoutManager.getWorkAreaForMonitor(this.panel.monitor.index)
+        let wa = this._getWorkAreaForPreview()
         if (!wa) return null
         return `${wa.x},${wa.y},${wa.width},${wa.height}`
       } catch (e) {
@@ -1028,50 +1509,71 @@ export const WorkspacePreviewView = GObject.registerClass(
       if (!this.panel || !this._workspaceItems.length) return
       if (!this._ensureWorkspaceBindings()) return
 
-      let previewWidth = SETTINGS.get_int('workspace-preview-width')
-      let wa = null
-      try {
-        wa = Main.layoutManager.getWorkAreaForMonitor(this.panel.monitor.index)
-      } catch (e) {
-        wa = null
-      }
       let namePosition = 'BOTTOM_RIGHT'
       try {
         namePosition = SETTINGS.get_string('workspace-preview-name-position')
       } catch (e) {
         namePosition = 'BOTTOM_RIGHT'
       }
-      let previewHeight = this._computePreviewHeight(
-        previewWidth,
-        this._workspaceItems.length,
-        namePosition,
-      )
 
-      // 几何 key：用于避免重复 set_scale/set_position
-      const geomKey = wa
-        ? `${previewWidth}x${previewHeight}__${wa.x},${wa.y},${wa.width},${wa.height}`
-        : `${previewWidth}x${previewHeight}__no-wa`
+      const side = this._isSidePanel()
+      let previewWidth
+      let previewHeight
+      if (side) {
+        previewWidth = this._getPreviewMainSize()
+        previewHeight = this._computePreviewHeight(
+          previewWidth,
+          this._workspaceItems.length,
+          namePosition,
+        )
+      } else {
+        previewHeight = this._getPreviewMainSize()
+        previewWidth = this._computePreviewWidth(
+          previewHeight,
+          this._workspaceItems.length,
+          namePosition,
+        )
+      }
+
+      let wa = this._getWorkAreaForPreview()
 
       for (let item of this._workspaceItems) {
         if (!item?._dtwPreviewArea || !item?._dtwPreviewStack) continue
+        const itemPreviewWidth = side
+          ? this._getItemPreviewWidth(item)
+          : previewWidth
+        const itemPreviewHeight = side
+          ? previewHeight
+          : this._getItemPreviewHeight(item, previewHeight)
+
         // 尺寸不变则不要 set_size（减少 relayout）
         try {
-          if (item._dtwPreviewStack.width !== previewWidth || item._dtwPreviewStack.height !== previewHeight)
-            item._dtwPreviewStack.set_size(previewWidth, previewHeight)
+          if (
+            item._dtwPreviewStack.width !== itemPreviewWidth ||
+            item._dtwPreviewStack.height !== itemPreviewHeight
+          )
+            item._dtwPreviewStack.set_size(itemPreviewWidth, itemPreviewHeight)
         } catch (e) {
-          item._dtwPreviewStack.set_size(previewWidth, previewHeight)
+          item._dtwPreviewStack.set_size(itemPreviewWidth, itemPreviewHeight)
         }
         try {
-          if (item._dtwPreviewArea.width !== previewWidth || item._dtwPreviewArea.height !== previewHeight)
-            item._dtwPreviewArea.set_size(previewWidth, previewHeight)
+          if (
+            item._dtwPreviewArea.width !== itemPreviewWidth ||
+            item._dtwPreviewArea.height !== itemPreviewHeight
+          )
+            item._dtwPreviewArea.set_size(itemPreviewWidth, itemPreviewHeight)
         } catch (e) {
-          item._dtwPreviewArea.set_size(previewWidth, previewHeight)
+          item._dtwPreviewArea.set_size(itemPreviewWidth, itemPreviewHeight)
         }
+
+        const geomKey = wa
+          ? `${itemPreviewWidth}x${itemPreviewHeight}__${wa.x},${wa.y},${wa.width},${wa.height}`
+          : `${itemPreviewWidth}x${itemPreviewHeight}__no-wa`
 
         if (item._dtwLastGeomKey === geomKey) {
           // 叠加层仍需在尺寸变化时重算位置；这里让 updateLabelPos 自己去重
           try {
-            item._dtwUpdateLabelPos?.(previewWidth, previewHeight)
+            item._dtwUpdateLabelPos?.(itemPreviewWidth, itemPreviewHeight)
           } catch (e) {
             // ignore
           }
@@ -1080,29 +1582,30 @@ export const WorkspacePreviewView = GObject.registerClass(
         item._dtwLastGeomKey = geomKey
 
         if (wa && wa.width > 0 && wa.height > 0) {
-          let scale = Math.max(previewWidth / wa.width, previewHeight / wa.height)
-          let contentW = wa.width * scale
-          let contentH = wa.height * scale
-          let x = Math.floor((previewWidth - contentW) / 2)
-          let y = Math.floor((previewHeight - contentH) / 2)
+          const layout = this._getPreviewScaleLayout(
+            itemPreviewWidth,
+            itemPreviewHeight,
+            wa,
+          )
 
           try {
-            item._dtwBackgroundGroup?.set_scale?.(scale, scale)
-            item._dtwBackgroundGroup?.set_position?.(x, y)
+            item._dtwBackgroundGroup?.set_scale?.(layout.scale, layout.scale)
+            item._dtwBackgroundGroup?.set_position?.(layout.x, layout.y)
           } catch (e) {
             // ignore
           }
           try {
-            item._dtwThumbnail?.setScale?.(scale, scale)
-            item._dtwThumbnail?.set_position?.(x, y)
+            item._dtwThumbnail?.setScale?.(layout.scale, layout.scale)
+            item._dtwThumbnail?.set_position?.(layout.x, layout.y)
           } catch (e) {
             // ignore
           }
+          this._applyThumbnailPorthole(item, wa)
         }
 
         // 叠加层重算位置
         try {
-          item._dtwUpdateLabelPos?.(previewWidth, previewHeight)
+          item._dtwUpdateLabelPos?.(itemPreviewWidth, itemPreviewHeight)
         } catch (e) {
           // ignore
         }
@@ -1114,24 +1617,27 @@ export const WorkspacePreviewView = GObject.registerClass(
       // 统一管理 label 样式，切换激活态只改颜色，避免重建造成闪动
       nameLabel.style = `font-size: 12px; color: ${
         isActive ? 'white' : 'rgba(255,255,255,0.85)'
-      }; background-color: rgba(0,0,0,0.55); padding: 4px 8px; border-radius: 6px;`
+      }; background-color: rgba(0,0,0,0.55); padding: 2px 6px; border-radius: 4px;`
     }
 
     _handleRightClick(_actor, event) {
-      // 统一的右键处理：切换 intellihide 状态（如果不在图标上）
+      // 统一的右键处理：切换 intellihide 状态（如果不在图标/按钮上）
       try {
         let button = event.get_button()
         if (button === 3) {
-          // 检查是否点击在图标上（如果是，不处理，让图标菜单显示）
+          // 检查是否点击在图标/按钮上（如果是，不处理，让各自菜单显示）
           let [stageX, stageY] = event.get_coords()
           let pickActor = global.stage.get_actor_at_pos(
             Clutter.PickMode.REACTIVE,
             stageX,
             stageY,
           )
-          // 如果点击在图标按钮上，不处理（让图标菜单显示）
-          if (pickActor && pickActor._dtwApp) {
-            return Clutter.EVENT_PROPAGATE
+          // 应用图标、快捷栏、+N 等 St.Button 自己处理右键
+          let a = pickActor
+          while (a && a !== this) {
+            if (a._dtwApp || a instanceof St.Button)
+              return Clutter.EVENT_PROPAGATE
+            a = a.get_parent?.()
           }
           // 切换 intellihide 状态
           let currentState = SETTINGS.get_boolean('intellihide')
@@ -1720,8 +2226,45 @@ export const WorkspacePreviewView = GObject.registerClass(
       this._lastFocusedIcon = next
     }
 
+    _canRefreshWorkspacesIncrementally() {
+      if (!this._workspaceItems?.length) return false
+
+      let wm
+      try {
+        wm = Utils.DisplayWrapper.getWorkspaceManager()
+      } catch (e) {
+        return false
+      }
+
+      const desired = wm?.n_workspaces ?? 0
+      if (desired !== this._workspaceItems.length) return false
+
+      for (let i = 0; i < desired; i++) {
+        const ws = wm.get_workspace_by_index(i)
+        const item = this._workspaceItems[i]
+        if (!ws || !item) return false
+        if (item._dtwWorkspace && item._dtwWorkspace !== ws) return false
+      }
+
+      return true
+    }
+
+    _refreshWorkspacesIncrementally() {
+      this._updateListSpacingForIconSize()
+      this._updateWorkspacesGeometry()
+      this._updateActiveState()
+      this._updateWorkspaceNameLabels()
+      this._updateFocusedIcons()
+      this._updateVisibility()
+    }
+
     _updateWorkspaces() {
       if (this._dtwRebuildInProgress) return
+      if (this._canRefreshWorkspacesIncrementally()) {
+        this._refreshWorkspacesIncrementally()
+        return
+      }
+
       this._dtwRebuildInProgress = true
       this._cancelIconDrag()
       // 确保快捷栏存在（并且在重建后仍保留在底部）
@@ -1746,20 +2289,27 @@ export const WorkspacePreviewView = GObject.registerClass(
       let workspaceCount = workspaceManager.n_workspaces
       let activeWorkspace = workspaceManager.get_active_workspace()
 
-      let previewWidth = SETTINGS.get_int('workspace-preview-width')
-      // 列表项间距：只用于条目之间，不用于“撑满”高度
+      let previewWidth
+      let previewHeight
       let spacing = SETTINGS.get_int('workspace-preview-spacing')
       let namePosition = SETTINGS.get_string('workspace-preview-name-position')
-      let isSidePanel =
-        this.panel?.geom?.position == St.Side.LEFT ||
-        this.panel?.geom?.position == St.Side.RIGHT
+      let isSidePanel = this._isSidePanel()
 
-      // 预览高度：优先按 workarea 比例；当 workspace 数量太多时缩小以塞进可用高度（不含快捷栏）
-      let previewHeight = this._computePreviewHeight(
-        previewWidth,
-        workspaceCount,
-        namePosition,
-      )
+      if (isSidePanel) {
+        previewWidth = this._getPreviewMainSize()
+        previewHeight = this._computePreviewHeight(
+          previewWidth,
+          workspaceCount,
+          namePosition,
+        )
+      } else {
+        previewHeight = this._getPreviewMainSize()
+        previewWidth = this._computePreviewWidth(
+          previewHeight,
+          workspaceCount,
+          namePosition,
+        )
+      }
 
       // 为每个工作区创建预览项（使用 GNOME Shell 原生 WorkspaceThumbnail）
       for (let i = 0; i < workspaceCount; i++) {
@@ -1820,9 +2370,10 @@ export const WorkspacePreviewView = GObject.registerClass(
           spacing: namePosition == 'BELOW' ? 4 : 0,
         }),
         style_class: isActive ? 'workspace-preview-item-active' : 'workspace-preview-item',
-        // 空 workspace 没有窗口 clone 时，仍然要能点击切换
         reactive: true,
         track_hover: true,
+        x_expand: this._isSidePanel(),
+        y_expand: !this._isSidePanel(),
       })
       container._dtwIndex = index
       container._dtwWorkspace = workspace
@@ -1842,6 +2393,7 @@ export const WorkspacePreviewView = GObject.registerClass(
         layout_manager: new Clutter.BinLayout(),
         reactive: true,
         track_hover: true,
+        x_expand: true,
       })
       container._dtwPreviewStack = previewStack
 
@@ -1852,9 +2404,9 @@ export const WorkspacePreviewView = GObject.registerClass(
         style_class: 'workspace-preview-area',
         clip_to_allocation: true,
         layout_manager: new Clutter.BinLayout(),
-        // 让预览区域本身也可点击（特别是空 workspace）
         reactive: true,
         track_hover: true,
+        x_expand: true,
       })
       container._dtwPreviewArea = previewArea
 
@@ -1864,30 +2416,23 @@ export const WorkspacePreviewView = GObject.registerClass(
       // 用与 WorkspaceThumbnail 相同的 porthole（workArea）比例来缩放/居中背景。
       // 这里使用“cover”（铺满裁切）避免预览区出现留白。
       let wa = null
-      let scale = 1
       try {
-        wa = Main.layoutManager.getWorkAreaForMonitor(this.panel.monitor.index)
-        if (wa && wa.width > 0 && wa.height > 0) {
-          scale = Math.max(previewWidth / wa.width, previewHeight / wa.height)
-        }
+        wa = this._getWorkAreaForPreview()
       } catch (e) {
         wa = null
-        scale = 1
       }
 
       try {
         let backgroundGroup = new Meta.BackgroundGroup()
         if (wa) {
           backgroundGroup.set_size(wa.width, wa.height)
-          backgroundGroup.set_scale(scale, scale)
-
-          // 居中（允许负坐标，配合 clip 实现裁切）
-          let contentW = wa.width * scale
-          let contentH = wa.height * scale
-          backgroundGroup.set_position(
-            Math.floor((previewWidth - contentW) / 2),
-            Math.floor((previewHeight - contentH) / 2),
+          const layout = this._getPreviewScaleLayout(
+            previewWidth,
+            previewHeight,
+            wa,
           )
+          backgroundGroup.set_scale(layout.scale, layout.scale)
+          backgroundGroup.set_position(layout.x, layout.y)
         } else {
           backgroundGroup.set_size(previewWidth, previewHeight)
         }
@@ -1913,27 +2458,18 @@ export const WorkspacePreviewView = GObject.registerClass(
           this.panel.monitor.index,
         )
 
-        // 按 porthole 比例缩放到 previewArea（cover：铺满裁切，避免留白）
-        if (!wa) wa = Main.layoutManager.getWorkAreaForMonitor(this.panel.monitor.index)
-        if (wa && wa.width > 0 && wa.height > 0) {
-          scale = Math.max(previewWidth / wa.width, previewHeight / wa.height)
-        } else {
-          scale = 1
-        }
-        tmb.setScale(scale, scale)
-
-        // 居中（允许负坐标，配合 clip 实现裁切）
-        if (wa && wa.width > 0 && wa.height > 0) {
-          let contentW = wa.width * scale
-          let contentH = wa.height * scale
-          tmb.set_position(
-            Math.floor((previewWidth - contentW) / 2),
-            Math.floor((previewHeight - contentH) / 2),
-          )
-        }
+        if (!wa) wa = this._getWorkAreaForPreview()
+        const tmbLayout = this._getPreviewScaleLayout(
+          previewWidth,
+          previewHeight,
+          wa,
+        )
+        tmb.setScale(tmbLayout.scale, tmbLayout.scale)
+        tmb.set_position(tmbLayout.x, tmbLayout.y)
 
         previewArea.add_child(tmb)
         container._dtwThumbnail = tmb
+        this._applyThumbnailPorthole(container, wa)
       } catch (e) {
         // 如果创建失败，显示占位符
         let placeholder = new St.Label({
@@ -2031,6 +2567,7 @@ export const WorkspacePreviewView = GObject.registerClass(
 
         // 根据 previewArea 实际分配尺寸，把图标与序号分别定位
         let margin = 10
+        let nameMargin = 2
         let updateLabelPos = (forcedW = null, forcedH = null) => {
           // 只在必要时把叠加层置顶（避免每次都做 set_child_above_sibling）
           try {
@@ -2108,10 +2645,10 @@ export const WorkspacePreviewView = GObject.registerClass(
 
           badge.set_position(x, y)
 
-          // 顶部序号：固定在左上角
+          // 顶部序号：贴左上角
           let [, , nameW, nameH] = nameLabel.get_preferred_size()
-          let nameX = margin
-          let nameY = margin
+          let nameX = nameMargin
+          let nameY = nameMargin
           nameLabel.set_position(nameX, nameY)
         }
         container._dtwUpdateLabelPos = updateLabelPos
@@ -2312,14 +2849,8 @@ export const WorkspacePreviewView = GObject.registerClass(
       if (container._dtwNameOverlayLayer)
         container._dtwNameOverlayLayer._delegate = dragOverDelegate
 
-      // 右键处理：切换 intellihide 状态（在 button-press 上处理，避免被 panel 拦截）
-      // 在多个层上连接右键事件，确保能捕获到（previewStack 和 previewArea 已经有 reactive: true）
-      previewStack.connect('button-press-event', (actor, event) =>
-        this._handleRightClick(actor, event),
-      )
-      previewArea.connect('button-press-event', (actor, event) =>
-        this._handleRightClick(actor, event),
-      )
+      // 右键由 WorkspacePreviewView 根节点的 captured-event 统一处理
+      // （不要在 previewStack/previewArea 再挂一份，否则可能连点两次等于没切换）
 
       // 点击切换工作区：不要在 button-press 上 EVENT_STOP（会阻断拖拽）
       // 改为 button-release，并且不拦截 press，让拖拽手势正常启动。
@@ -2360,6 +2891,13 @@ export const WorkspacePreviewView = GObject.registerClass(
         // ignore
       }
       this._shortcutsBar = null
+
+      try {
+        this._wmPrefs?.run_dispose?.()
+      } catch (e) {
+        // ignore
+      }
+      this._wmPrefs = null
 
       this._signalsHandler.destroy()
       this._timeoutsHandler.destroy()

@@ -26,6 +26,7 @@ import St from 'gi://St'
 
 import * as Taskbar from './taskbar.js'
 import * as Utils from './utils.js'
+import * as ShellCompat from './compat/shellCompat.js'
 import { SETTINGS, DESKTOPSETTINGS } from './extension.js'
 import { gettext as _ } from 'resource:///org/gnome/shell/extensions/extension.js'
 
@@ -62,7 +63,11 @@ export const PreviewMenu = GObject.registerClass(
   },
   class PreviewMenu extends St.Widget {
     _init(panel) {
-      super._init({ layout_manager: new Clutter.BinLayout() })
+      super._init({
+        layout_manager: new Clutter.BinLayout(),
+        reactive: false,
+        track_hover: false,
+      })
 
       let geom = panel.geom
       this.panel = panel
@@ -110,8 +115,8 @@ export const PreviewMenu = GObject.registerClass(
       this._timeoutsHandler = new Utils.TimeoutsHandler()
       this._signalsHandler = new Utils.GlobalSignalsHandler()
 
-      Main.layoutManager.addChrome(this, { affectsInputRegion: false })
-      Main.layoutManager.trackChrome(this.menu, { affectsInputRegion: true })
+      ShellCompat.addLayoutChrome(this)
+      ShellCompat.trackLayoutChrome(this.menu)
 
       this._resetHiddenState()
       this._refreshGlobals()

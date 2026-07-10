@@ -80,6 +80,8 @@ export const ProximityManager = class {
     this._counter = 1
     this._watches = {}
     this._focusedWindowInfo = null
+    this._windowsCache = null
+    this._windowsCacheWs = -1
 
     this._signalsHandler = new Utils.GlobalSignalsHandler()
     this._timeoutsHandler = new Utils.TimeoutsHandler()
@@ -129,18 +131,38 @@ export const ProximityManager = class {
 
   _bindSignals() {
     this._signalsHandler.add(
-      [global.window_manager, 'switch-workspace', () => this._queueUpdate()],
+      [
+        global.window_manager,
+        'switch-workspace',
+        () => {
+          this._invalidateWindowsCache()
+          this._queueUpdate()
+        },
+      ],
       [Main.overview, 'hidden', () => this._queueUpdate()],
       [
         global.display,
         'notify::focus-window',
         () => {
           this._setFocusedWindow()
+          this._invalidateWindowsCache()
           this._queueUpdate()
         },
       ],
-      [global.display, 'restacked', () => this._queueUpdate()],
+      [
+        global.display,
+        'restacked',
+        () => {
+          this._invalidateWindowsCache()
+          this._queueUpdate()
+        },
+      ],
     )
+  }
+
+  _invalidateWindowsCache() {
+    this._windowsCache = null
+    this._windowsCacheWs = -1
   }
 
   _setFocusedWindow() {
@@ -207,9 +229,16 @@ export const ProximityManager = class {
   }
 
   _getHandledWindows() {
-    return Utils.getCurrentWorkspace()
+    let workspace = Utils.getCurrentWorkspace()
+    let wsIndex = workspace?.index?.() ?? -1
+    if (this._windowsCache && this._windowsCacheWs === wsIndex)
+      return this._windowsCache
+
+    this._windowsCache = workspace
       .list_windows()
       .filter((mw) => this._checkIfHandledWindow(mw))
+    this._windowsCacheWs = wsIndex
+    return this._windowsCache
   }
 
   _checkIfHandledWindow(metaWindow) {

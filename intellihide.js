@@ -46,6 +46,9 @@ const SIDE_CONTROLS_ANIMATION_TIME =
   OverviewControls.SIDE_CONTROLS_ANIMATION_TIME /
   (OverviewControls.SIDE_CONTROLS_ANIMATION_TIME > 1 ? 1000 : 1)
 
+// 唤出判定：屏幕物理边缘的窄带（逻辑像素）
+const REVEAL_EDGE_PX = 1
+
 export const Hold = {
   NONE: 0,
   TEMPORARY: 1,
@@ -278,7 +281,7 @@ export const Intellihide = class {
       ],
     )
 
-    if (Meta.is_wayland_compositor()) {
+    if (Utils.isWaylandCompositor()) {
       this._signalsHandler.add([
         this._panelBox,
         'notify::visible',
@@ -298,9 +301,11 @@ export const Intellihide = class {
   }
 
   _setRevealMechanism() {
-    let barriers = Meta.BackendCapabilities.BARRIERS
+    let barriers = Meta.BackendCapabilities?.BARRIERS
 
     if (
+      barriers &&
+      global.backend?.capabilities &&
       (global.backend.capabilities & barriers) === barriers &&
       SETTINGS.get_boolean('intellihide-use-pressure')
     ) {
@@ -317,9 +322,13 @@ export const Intellihide = class {
         () => {
           let [x, y] = global.get_pointer()
 
-          if (this._pointerIn(x, y, 1, 'intellihide-use-pointer-limit-size'))
+          if (this._atRevealEdge(x, y)) {
+            this._hover = true
+            this._hoveredOut = false
             this._queueUpdatePanelPosition(true)
-          else this._pressureBarrier._isTriggered = false
+          } else {
+            this._pressureBarrier._isTriggered = false
+          }
         },
       ])
     }
@@ -373,30 +382,42 @@ export const Intellihide = class {
     return new Meta.Barrier(opts)
   }
 
+  _isPanelFullyRevealed() {
+    return (
+      this._panelBox.visible && this._panelBox[this._translationProp] === 0
+    )
+  }
+
+  _atRevealEdge(x, y) {
+    return this._pointerIn(
+      x,
+      y,
+      REVEAL_EDGE_PX,
+      'intellihide-use-pointer-limit-size',
+    )
+  }
+
   _checkMousePointer(x, y) {
     // 防止扩展禁用或面板销毁后仍被 PointerWatcher 回调访问导致崩溃
     if (!this.enabled || !this._dtpPanel?.geom || !this._monitor) return
 
-    // 显示区域：仅由“Hovering the panel area keeps the panel revealed”控制
-    // - 未选中：只有鼠标到屏幕最边缘（1px）才触发显示
-    // - 选中：鼠标进入整个面板区域（含预览区）即触发显示
-    let revealZoneOffset = SETTINGS.get_boolean('intellihide-revealed-hover')
-      ? this._dtpPanel.geom.outerSize + this._dtpPanel.geom.topOffset
-      : 1
+    const atRevealEdge = this._atRevealEdge(x, y)
 
+    // 从隐藏到显示：只用屏幕最边缘的窄区域触发，避免误触。
+    // “悬停保持显示”仅影响面板已完全展开后的隐藏判断，不扩大唤出区域。
     if (
       !this._pressureBarrier &&
       !this._hover &&
       !Main.overview.visible &&
-      this._pointerIn(x, y, revealZoneOffset, 'intellihide-use-pointer-limit-size')
+      atRevealEdge
     ) {
       this._hover = true
       this._queueUpdatePanelPosition(true)
-    } else if (this._panelBox.visible) {
-      // 隐藏逻辑：只要鼠标还在整个面板区域（含任务栏+预览区）内就不隐藏
-      // 与“Hovering the panel area keeps the panel revealed”无关，统一按“全区域”判断
-      let fullPanelOffset =
-        this._dtpPanel.geom.outerSize + this._dtpPanel.geom.topOffset
+    } else if (this._isPanelFullyRevealed()) {
+      // 面板已完全展开：才用较宽的悬停区域判断是否保持显示
+      let fullPanelOffset = SETTINGS.get_boolean('intellihide-revealed-hover')
+        ? this._dtpPanel.geom.outerSize + this._dtpPanel.geom.topOffset
+        : REVEAL_EDGE_PX
       let hover = this._pointerIn(
         x,
         y,
@@ -409,6 +430,10 @@ export const Intellihide = class {
       this._hoveredOut = !hover
       this._hover = hover
       this._queueUpdatePanelPosition()
+    } else if (this._hover && !atRevealEdge) {
+      // 隐藏/动画过程中：清掉残留的 hover，避免离边缘尚远就被再次唤出
+      this._hover = false
+      this._hoveredOut = true
     }
   }
 
@@ -421,7 +446,15 @@ export const Intellihide = class {
     let varOffset = {}
 
     if (geom.dockMode && SETTINGS.get_boolean(limitSizeSetting)) {
-      let alloc = this._dtpPanel.allocation
+      let alloc = this._dtpPanel._stageAllocation
+      if (!alloc) {
+        alloc = {
+          x1: geom.x,
+          y1: geom.y,
+          x2: geom.x + geom.w,
+          y2: geom.y + geom.h,
+        }
+      }
       if (!alloc) return false
 
       if (!geom.dynamic) {
@@ -486,11 +519,17 @@ export const Intellihide = class {
 
   _checkIfShouldBeVisible(fromRevealMechanism) {
     if (!this._dtpPanel?.taskbar) return false
+
+    // 残留 hover 不能单独让隐藏中的面板弹出（须贴边或由唤出机制触发）
+    let hoverShows =
+      this._hover &&
+      (this._isPanelFullyRevealed() || fromRevealMechanism)
+
     if (
       Main.overview.visibleTarget ||
       this._dtpPanel.taskbar.previewMenu.opened ||
       this._dtpPanel.taskbar._dragMonitor ||
-      this._hover ||
+      hoverShows ||
       (this._dtpPanel.geom.position == St.Side.TOP &&
         Main.layoutManager.panelBox.get_hover() &&
         this._pointerAtEdge()) ||
@@ -516,14 +555,17 @@ export const Intellihide = class {
     }
 
     // 开启“用指针显示”时：仅当鼠标在边缘才因“无窗口遮挡”而显示，避免未碰边就自动弹出
-    if (SETTINGS.get_boolean('intellihide-use-pointer'))
-      return !this._windowOverlap && this._hover
+    if (SETTINGS.get_boolean('intellihide-use-pointer')) {
+      if (!this._hover) return false
+      let [x, y] = global.get_pointer()
+      return !this._windowOverlap && this._atRevealEdge(x, y)
+    }
     return !this._windowOverlap
   }
 
   _pointerAtEdge() {
     let [x, y] = global.get_pointer()
-    return this._pointerIn(x, y, 1, 'intellihide-use-pointer-limit-size')
+    return this._atRevealEdge(x, y)
   }
 
   _checkIfGrab() {
@@ -589,6 +631,10 @@ export const Intellihide = class {
     if (immediate) {
       this._panelBox[this._translationProp] = destination
       this._panelBox.visible = !destination
+      if (destination) {
+        let [x, y] = global.get_pointer()
+        if (!this._atRevealEdge(x, y)) this._hover = false
+      }
       update()
     } else if (destination !== this._panelBox[this._translationProp]) {
       let delay = 0
@@ -608,6 +654,10 @@ export const Intellihide = class {
         transition: 'easeOutQuad',
         onComplete: () => {
           this._panelBox.visible = !destination
+          if (destination) {
+            let [x, y] = global.get_pointer()
+            if (!this._atRevealEdge(x, y)) this._hover = false
+          }
           onComplete ? onComplete() : null
           update()
         },

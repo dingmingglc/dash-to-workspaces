@@ -162,7 +162,6 @@
   /* 上下可保留少量留白，避免贴边过紧 */
   padding-top: 0px;
   padding-bottom: 6px;
-  min-width: 220px;
 }
 
 .workspace-preview-item {
@@ -266,9 +265,9 @@
 }
 
 .workspace-preview-shortcuts-bar {
-  /* 预览区底部快捷栏：固定占一行高度 */
-  padding: 0px 4px;
-  spacing: 6px;
+  /* 底部快捷栏：5 槽等分平铺整条面板宽度 */
+  padding: 0px;
+  spacing: 0px;
 }
 
 .workspace-preview-shortcut-button {

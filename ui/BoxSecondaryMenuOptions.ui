@@ -16,17 +16,6 @@
 
         <child>
           <object class="AdwActionRow">
-            <property name="title" translatable="yes">Integrate &lt;i&gt;AppMenu&lt;/i&gt; items</property>
-            <child>
-              <object class="GtkSwitch" id="secondarymenu_appmenu_switch">
-                <property name="valign">center</property>
-              </object>
-            </child>
-          </object>
-        </child>
-
-        <child>
-          <object class="AdwActionRow">
             <property name="title" translatable="yes">&lt;i&gt;App Details&lt;/i&gt; menu item</property>
             <property name="subtitle" translatable="yes">&lt;i&gt;App Details&lt;/i&gt; is only available when Gnome Software is installed</property>
             <child>

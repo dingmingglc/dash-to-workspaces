@@ -1643,3 +1643,31 @@ msgstr "更浅"
 msgid "normal"
 msgstr "正常"
 
+#: ui/SettingsBehavior.ui
+msgid "Behavior and actions"
+msgstr "行为与操作"
+
+#: ui/SettingsPosition.ui
+msgid "Monitors"
+msgstr "显示器"
+
+#: ui/SettingsPosition.ui
+msgid "Auto hide"
+msgstr "自动隐藏"
+
+#: ui/SettingsPosition.ui
+msgid "Per monitor"
+msgstr "按显示器"
+
+#: ui/SettingsPosition.ui
+msgid "Panel layout"
+msgstr "面板布局"
+
+#: ui/SettingsPosition.ui
+msgid "Panel spacing"
+msgstr "面板间距"
+
+#: ui/SettingsStyle.ui
+msgid "Panel appearance"
+msgstr "面板外观"
+

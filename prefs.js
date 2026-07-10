@@ -31,26 +31,28 @@ import Gdk from 'gi://Gdk'
 
 import * as PanelSettings from './panelSettings.js'
 import * as Pos from './panelPositions.js'
+import {
+  DEFAULT_FONT_SIZES,
+  DEFAULT_MARGIN_SIZES,
+  DEFAULT_PADDING_SIZES,
+  DEFAULT_PANEL_SIZES,
+  DISABLE_CONFLICTING_AND_GNOME_PREFS,
+  HIDDEN_INTELLIHIDE_ROW_WIDGETS,
+  HIDDEN_INTELLIHIDE_ROWS,
+  HIDDEN_PREF_GROUPS,
+  HIDDEN_PREF_ROW_WIDGETS,
+  LENGTH_MARKS,
+  MAX_WINDOW_INDICATOR,
+  SCALE_UPDATE_TIMEOUT,
+  SCHEMA_PATH,
+  SIMPLIFY_PREFS,
+} from './prefs/constants.js'
 
 import {
   ExtensionPreferences,
   gettext as _,
   ngettext,
 } from 'resource:///org/gnome/Shell/Extensions/js/extensions/prefs.js'
-
-const SCALE_UPDATE_TIMEOUT = 500
-/** Temporarily hide prefs that conflict with Dash to Panel or touch GNOME shell defaults. */
-const DISABLE_CONFLICTING_AND_GNOME_PREFS = true
-
-const DEFAULT_PANEL_SIZES = [128, 96, 64, 48, 32, 22]
-const DEFAULT_FONT_SIZES = [96, 64, 48, 32, 24, 16, 0]
-const DEFAULT_MARGIN_SIZES = [32, 24, 16, 12, 8, 4, 0]
-const DEFAULT_PADDING_SIZES = [32, 24, 16, 12, 8, 4, 0, -1]
-// Minimum length could be 0, but a higher value may help prevent confusion about where the panel went.
-const LENGTH_MARKS = [100, 90, 80, 70, 60, 50, 40, 30, 20]
-const MAX_WINDOW_INDICATOR = 4
-
-const SCHEMA_PATH = '/org/gnome/shell/extensions/dash-to-workspaces/'
 
 /**
  * This function was copied from the activities-config extension
@@ -202,13 +204,8 @@ const Preferences = class {
     let pageBehavior = this._builder.get_object('behavior')
     window.add(pageBehavior)
 
-    this._builder.add_from_file(this._path + '/ui/SettingsAction.ui')
-    let pageAction = this._builder.get_object('action')
-    window.add(pageAction)
-
+    // Finetune widgets only (bindings); tab removed from preferences window.
     this._builder.add_from_file(this._path + '/ui/SettingsFineTune.ui')
-    let pageFineTune = this._builder.get_object('finetune')
-    window.add(pageFineTune)
 
     this._builder.add_from_file(this._path + '/ui/SettingsAbout.ui')
     let pageAbout = this._builder.get_object('about')
@@ -790,34 +787,38 @@ const Preferences = class {
   }
 
   _disableConflictingPrefs() {
-    // 只隐藏冲突的设置，保留位置和 Intellihide 设置（用户可以调整显示位置和隐藏行为）
-    // 注意：position_group_on_monitor3 已恢复显示，但只显示 Activities button 和 System menu
-    const ids = [
-      'action_group_hotkey', // HotKey overlay（快捷键覆盖层）
-      'behavior_group_hover', // Hover 相关（窗口预览、工具提示）
-      'behavior_group_isolate', // 隔离工作区/显示器
-      'behavior_group_overview', // Overview 相关
-      'finetune_group_gnome', // GNOME 功能相关
-      'style_group_global', // 全局圆角样式
-    ]
-    ids.forEach((id) => {
-      const w = this._builder.get_object(id)
-      if (w) w.set_visible(false)
+    if (!SIMPLIFY_PREFS) return
+
+    HIDDEN_PREF_GROUPS.forEach((id) => {
+      const g = this._builder.get_object(id)
+      if (g) g.set_visible(false)
     })
-    // 隐藏 Style 页面中的 Hover 相关设置
-    const hoverStyleIds = [
-      'animate_appicon_hover_switch',
-      'animate_appicon_hover_button',
-      'highlight_appicon_hover_switch',
-      'highlight_appicon_hover_button',
-    ]
-    hoverStyleIds.forEach((id) => {
-      const w = this._builder.get_object(id)
-      if (w) {
-        const row = w.get_parent()
-        if (row) row.set_visible(false)
+
+    HIDDEN_PREF_ROW_WIDGETS.forEach((id) => this._hidePrefRowForWidget(id))
+
+    HIDDEN_INTELLIHIDE_ROWS.forEach((id) => {
+      const row = this._builder.get_object(id)
+      if (row) row.set_visible(false)
+    })
+
+    HIDDEN_INTELLIHIDE_ROW_WIDGETS.forEach((id) =>
+      this._hidePrefRowForWidget(id),
+    )
+  }
+
+  _hidePrefRowForWidget(widgetId) {
+    const w = this._builder.get_object(widgetId)
+    if (!w) return
+
+    let node = w
+    for (let i = 0; i < 8 && node; i++) {
+      if (node instanceof Adw.ActionRow || node instanceof Adw.PreferencesRow) {
+        node.set_visible(false)
+        return
       }
-    })
+      node = node.get_parent()
+    }
+    w.set_visible(false)
   }
 
   _setMonitorsInfo() {
@@ -3354,26 +3355,12 @@ const Preferences = class {
           () => {
             // restore default settings
             this._settings.set_value(
-              'secondarymenu-contains-appmenu',
-              this._settings.get_default_value(
-                'secondarymenu-contains-appmenu',
-              ),
-            )
-            this._settings.set_value(
               'secondarymenu-contains-showdetails',
               this._settings.get_default_value(
                 'secondarymenu-contains-showdetails',
               ),
             )
           },
-        )
-
-        // TODO setting secondarymenu-contains-appmenu is not being used anywhere
-        this._settings.bind(
-          'secondarymenu-contains-appmenu',
-          this._builder.get_object('secondarymenu_appmenu_switch'),
-          'active',
-          Gio.SettingsBindFlags.DEFAULT,
         )
 
         this._settings.bind(
@@ -4059,9 +4046,6 @@ const Preferences = class {
         )
       })
 
-    this._builder
-      .get_object('zorin_os_logo')
-      .set_filename(`${this._path}/img/zorin-os.svg`)
   }
 
   _setPreviewTitlePosition() {

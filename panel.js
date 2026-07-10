@@ -810,6 +810,7 @@ export const Panel = GObject.registerClass(
     _resetGeometry() {
       this._setPanelBoxStyle()
       this.geom = this.getGeometry()
+      this._syncStageAllocation()
       this._maybeSetDockCss()
       this._setPanelPosition()
       this.taskbar.resetAppIcons(true)
@@ -909,6 +910,29 @@ export const Panel = GObject.registerClass(
         dtpUiActor.raise_top?.()
       } catch (e) {
         // ignore
+      }
+    }
+
+    /** Stage-coordinate box for intellihide (do not use `this.allocation` — read-only). */
+    _syncStageAllocation(localBox) {
+      const g = this.geom
+      if (!g) return
+
+      if (localBox) {
+        this._stageAllocation = {
+          x1: g.x + localBox.x1,
+          y1: g.y + localBox.y1,
+          x2: g.x + localBox.x2,
+          y2: g.y + localBox.y2,
+        }
+        return
+      }
+
+      this._stageAllocation = {
+        x1: g.x,
+        y1: g.y,
+        x2: g.x + g.w,
+        y2: g.y + g.h,
       }
     }
 
@@ -1119,9 +1143,108 @@ export const Panel = GObject.registerClass(
       this.panel.set_allocation(box)
     }
 
+    /**
+     * 动态长度：按预览内容自然尺寸收缩 layoutBox，并按锚点对齐（默认居中）。
+     */
+    _shrinkBoxToPreviewContent(box) {
+      const natural = this.workspacePreview?.getNaturalContentLength?.() || 0
+      if (natural <= 0) return box
+
+      const out = new Clutter.ActorBox()
+      out.x1 = box.x1
+      out.x2 = box.x2
+      out.y1 = box.y1
+      out.y2 = box.y2
+
+      const c1 = this.varCoord.c1
+      const c2 = this.varCoord.c2
+      const avail = box[c2] - box[c1]
+      const size = Math.min(avail, natural)
+      if (size >= avail - 1) return box
+
+      const dynamic = this.geom.dynamic
+      if (dynamic == Pos.STACKED_TL) {
+        out[c1] = box[c1]
+        out[c2] = box[c1] + size
+      } else if (dynamic == Pos.STACKED_BR) {
+        out[c1] = box[c2] - size
+        out[c2] = box[c2]
+      } else {
+        // CENTERED_MONITOR / 默认居中
+        const half = Math.floor((avail - size) * 0.5)
+        out[c1] = box[c1] + half
+        out[c2] = out[c1] + size
+      }
+      return out
+    }
+
+    /** 动态预览模式：把 clip 收成内容宽度，去掉两侧空白。 */
+    _applyDynamicPreviewClip(layoutBox) {
+      if (!this.clipContainer || !this.geom) return
+      const w = Math.max(1, layoutBox.x2 - layoutBox.x1)
+      const h = Math.max(1, layoutBox.y2 - layoutBox.y1)
+      Utils.setClip(
+        this.clipContainer,
+        this.geom.x + layoutBox.x1,
+        this.geom.y + layoutBox.y1,
+        w,
+        h,
+        0,
+        this.geom.topOffset,
+      )
+    }
+
+    /**
+     * 在 layoutBox 内分配快捷栏，返回扣除快捷栏后的内容区。
+     * originAtZero=true 时坐标相对 layoutBox 左上角（动态 clip 用）。
+     */
+    _allocatePreviewChrome(layoutBox, originAtZero) {
+      const contentBox = new Clutter.ActorBox()
+      const ox = originAtZero ? layoutBox.x1 : 0
+      const oy = originAtZero ? layoutBox.y1 : 0
+      contentBox.x1 = layoutBox.x1 - ox
+      contentBox.x2 = layoutBox.x2 - ox
+      contentBox.y1 = layoutBox.y1 - oy
+      contentBox.y2 = layoutBox.y2 - oy
+
+      if (!this.workspacePreview) return contentBox
+
+      this.workspacePreview._ensureShortcutsBar()
+      const verticalBar = this.workspacePreview.isShortcutsBarVertical()
+      if (verticalBar) {
+        const barW = this.workspacePreview.getShortcutsBarWidth()
+        if (barW > 0) {
+          const shortcutsBox = new Clutter.ActorBox()
+          shortcutsBox.x1 = contentBox.x2 - barW
+          shortcutsBox.x2 = contentBox.x2
+          shortcutsBox.y1 = contentBox.y1
+          shortcutsBox.y2 = contentBox.y2
+          contentBox.x2 = shortcutsBox.x1
+          this.workspacePreview._allocateShortcutsBar(shortcutsBox)
+        } else if (this.workspacePreview._shortcutsBar) {
+          this.workspacePreview._shortcutsBar.visible = false
+        }
+      } else {
+        const barH = this.workspacePreview.getShortcutsBarHeight()
+        if (barH > 0) {
+          const shortcutsBox = new Clutter.ActorBox()
+          shortcutsBox.x1 = contentBox.x1
+          shortcutsBox.x2 = contentBox.x2
+          shortcutsBox.y1 = contentBox.y2 - barH
+          shortcutsBox.y2 = contentBox.y2
+          contentBox.y2 = shortcutsBox.y1
+          this.workspacePreview._allocateShortcutsBar(shortcutsBox)
+        } else if (this.workspacePreview._shortcutsBar) {
+          this.workspacePreview._shortcutsBar.visible = false
+        }
+      }
+      return contentBox
+    }
+
     vfunc_allocate(box) {
       // 主面板本体 allocation
       this.set_allocation(box)
+      this._syncStageAllocation(box)
 
       // 显示模式与分区计算
       const displayMode = SETTINGS.get_string('workspace-preview-display-mode')
@@ -1131,19 +1254,56 @@ export const Panel = GObject.registerClass(
       if (this.panel) this.panel.visible = showPanel
       if (this.workspacePreview) this.workspacePreview.visible = showPreview
 
-      // 只有预览：预览占满整个主面板
+      // 动态长度 + 仅预览：按内容收缩并居中（去掉预览右侧空白）
+      let layoutBox = box
+      let dynamicPreviewClip = false
+      if (
+        showPreview &&
+        !showPanel &&
+        this.geom.dynamic &&
+        this.workspacePreview
+      ) {
+        layoutBox = this._shrinkBoxToPreviewContent(box)
+        dynamicPreviewClip =
+          layoutBox.x1 !== box.x1 ||
+          layoutBox.x2 !== box.x2 ||
+          layoutBox.y1 !== box.y1 ||
+          layoutBox.y2 !== box.y2
+      }
+
+      // 只有预览：预览占满内容区（不含快捷栏）
       if (showPreview && !showPanel && this.workspacePreview) {
-        this.workspacePreview.allocate(box)
+        const contentBox = this._allocatePreviewChrome(
+          layoutBox,
+          dynamicPreviewClip,
+        )
+        this.workspacePreview.allocate(contentBox)
+        if (dynamicPreviewClip) this._applyDynamicPreviewClip(layoutBox)
+        else this._setPanelClip()
         return
+      }
+
+      // 快捷栏：侧栏在底部横跨；上/下栏在最右侧竖排
+      let contentBox
+      if (showPreview && this.workspacePreview) {
+        contentBox = this._allocatePreviewChrome(layoutBox, false)
+      } else {
+        if (this.workspacePreview?._shortcutsBar)
+          this.workspacePreview._shortcutsBar.visible = false
+        contentBox = new Clutter.ActorBox()
+        contentBox.x1 = layoutBox.x1
+        contentBox.x2 = layoutBox.x2
+        contentBox.y1 = layoutBox.y1
+        contentBox.y2 = layoutBox.y2
       }
 
       // 只有任务栏：任务栏占满整个主面板（走原始分配逻辑）
       // 两者都显示：按位置分区，任务栏区域继续走原始分配逻辑
       let taskBox = new Clutter.ActorBox()
-      taskBox.x1 = box.x1
-      taskBox.x2 = box.x2
-      taskBox.y1 = box.y1
-      taskBox.y2 = box.y2
+      taskBox.x1 = contentBox.x1
+      taskBox.x2 = contentBox.x2
+      taskBox.y1 = contentBox.y1
+      taskBox.y2 = contentBox.y2
 
       if (showPreview && showPanel && this.workspacePreview) {
         const thickness = SETTINGS.get_int('workspace-preview-width')
@@ -1164,20 +1324,20 @@ export const Panel = GObject.registerClass(
           else previewFirst = !isOutside // LEFT: 内侧在左 → 预览先
 
           if (previewFirst) {
-            previewBox.x1 = box.x1
-            previewBox.x2 = box.x1 + thickness
+            previewBox.x1 = contentBox.x1
+            previewBox.x2 = contentBox.x1 + thickness
             taskBox.x1 = previewBox.x2 + gap
-            taskBox.x2 = box.x2
+            taskBox.x2 = contentBox.x2
           } else {
-            previewBox.x2 = box.x2
-            previewBox.x1 = box.x2 - thickness
-            taskBox.x1 = box.x1
+            previewBox.x2 = contentBox.x2
+            previewBox.x1 = contentBox.x2 - thickness
+            taskBox.x1 = contentBox.x1
             taskBox.x2 = previewBox.x1 - gap
           }
-          previewBox.y1 = box.y1
-          previewBox.y2 = box.y2
-          taskBox.y1 = box.y1
-          taskBox.y2 = box.y2
+          previewBox.y1 = contentBox.y1
+          previewBox.y2 = contentBox.y2
+          taskBox.y1 = contentBox.y1
+          taskBox.y2 = contentBox.y2
         } else {
           // 上/下：上下两行（从左到右）
           // TOP: 内侧→上；外侧→下。BOTTOM: 内侧→下；外侧→上。
@@ -1186,20 +1346,20 @@ export const Panel = GObject.registerClass(
           else previewFirst = isOutside
 
           if (previewFirst) {
-            previewBox.y1 = box.y1
-            previewBox.y2 = box.y1 + thickness
+            previewBox.y1 = contentBox.y1
+            previewBox.y2 = contentBox.y1 + thickness
             taskBox.y1 = previewBox.y2 + gap
-            taskBox.y2 = box.y2
+            taskBox.y2 = contentBox.y2
           } else {
-            previewBox.y2 = box.y2
-            previewBox.y1 = box.y2 - thickness
-            taskBox.y1 = box.y1
+            previewBox.y2 = contentBox.y2
+            previewBox.y1 = contentBox.y2 - thickness
+            taskBox.y1 = contentBox.y1
             taskBox.y2 = previewBox.y1 - gap
           }
-          previewBox.x1 = box.x1
-          previewBox.x2 = box.x2
-          taskBox.x1 = box.x1
-          taskBox.x2 = box.x2
+          previewBox.x1 = contentBox.x1
+          previewBox.x2 = contentBox.x2
+          taskBox.x1 = contentBox.x1
+          taskBox.x2 = contentBox.x2
         }
 
         // 分配预览区域

@@ -413,9 +413,9 @@
       <description>The numer of milliseconds that the pressure needs to be applied to reveal the panel</description>
     </key>
     <key type="b" name="intellihide-show-in-fullscreen">
-      <default>false</default>
+      <default>true</default>
       <summary>Allow revealing the panel while in fullscreen</summary>
-      <description>Allow the panel to be revealed while an application is in fullscreen mode</description>
+      <description>Allow the panel to be revealed while an application is in fullscreen mode (including VirtualBox fullscreen)</description>
     </key>
     <key type="b" name="intellihide-show-on-notification">
       <default>false</default>

@@ -34,6 +34,7 @@ import * as Config from 'resource:///org/gnome/shell/misc/config.js'
 import * as Util from 'resource:///org/gnome/shell/misc/util.js'
 import * as Main from 'resource:///org/gnome/shell/ui/main.js'
 import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js'
+import * as ShellCompat from './compat/shellCompat.js'
 
 const SCROLL_TIME = Util.SCROLL_TIME / (Util.SCROLL_TIME > 1 ? 1000 : 1)
 
@@ -223,6 +224,9 @@ export const DisplayWrapper = {
   },
 }
 
+// Removed in Mutter/GNOME 50 (Wayland-only); treat missing API as Wayland.
+export const isWaylandCompositor = ShellCompat.isWaylandCompositor
+
 let unredirectEnabled = true
 export const setDisplayUnredirect = (enable) => {
   let v48 = Config.PACKAGE_VERSION >= '48'
@@ -247,15 +251,7 @@ export const getSystemMenuInfo = function () {
 }
 
 export function getOverviewWorkspaces() {
-  return Main.overview._overview._controls._workspacesDisplay._workspacesViews.flatMap(
-    (wv) => [
-      ...(wv._workspaces || []), // WorkspacesDisplay --> WorkspacesView (primary monitor)
-      ...(wv._workspacesView?._workspaces || []), // WorkspacesDisplay --> SecondaryMonitorDisplay --> WorkspacesView
-      ...(wv._workspacesView?._workspace // WorkspacesDisplay --> SecondaryMonitorDisplay --> ExtraWorkspaceView
-        ? [wv._workspacesView._workspace]
-        : []),
-    ],
-  )
+  return ShellCompat.getOverviewWorkspaces()
 }
 
 export const getCurrentWorkspace = function () {

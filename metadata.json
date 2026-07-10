@@ -5,7 +5,8 @@
   "settings-schema": "org.gnome.shell.extensions.dash-to-workspaces",
   "gettext-domain": "dash-to-workspaces",
   "shell-version": [
-    "49"
+    "49",
+    "50"
   ],
   "version": 1,
   "url": "https://github.com/dingmingglc/dash-to-workspaces",

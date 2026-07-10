@@ -25,7 +25,7 @@
                 <property name="halign">center</property>
                 <property name="label" translatable="yes">GitHub</property>
                 <property name="receives-default">True</property>
-                <property name="uri">https://github.com/home-sweet-gnome/dash-to-panel</property>
+                <property name="uri">https://github.com/dingmingglc/dash-to-workspaces</property>
               </object>
             </child>
           </object>
@@ -78,41 +78,6 @@
 See the &lt;a href="https://www.gnu.org/licenses/old-licenses/gpl-2.0.html"&gt;GNU General Public License, version 2 or later&lt;/a&gt; for details.&lt;/span&gt;</property>
             <property name="use-markup">True</property>
             <property name="wrap">True</property>
-          </object>
-        </child>
-      </object>
-    </child>
-    <child>
-      <object class="AdwPreferencesGroup" id="about_group_sponsor">
-        <child>
-          <object class="GtkBox">
-            <property name="halign">center</property>
-            <property name="valign">center</property>
-            <property name="orientation">vertical</property>
-            <property name="margin-top">64</property>
-              <child>
-                <object class="GtkLabel">
-                  <property name="justify">center</property>
-                  <property name="label" translatable="yes">Sponsored and originally developed by</property>
-                  <property name="wrap">True</property>
-                </object>
-              </child>
-              <child>
-                <object class="GtkLinkButton">
-                  <property name="child">
-                    <object class="GtkBox">
-                      <property name="halign">center</property>
-                      <property name="valign">center</property>
-                      <child>
-                        <object class="GtkPicture" id="zorin_os_logo">
-                          <property name="can-shrink">False</property>
-                        </object>
-                      </child>
-                    </object>
-                  </property>
-                  <property name="uri">https://zorin.com/os/</property>
-                </object>
-              </child>
           </object>
         </child>
       </object>
